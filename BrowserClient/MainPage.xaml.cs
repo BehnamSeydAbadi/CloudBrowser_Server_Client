@@ -8,10 +8,12 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Foundation;
+using Windows.Foundation.Metadata;
 using Windows.Graphics.Display;
 using Windows.Networking.Sockets;
 using Windows.Storage;
 using Windows.Storage.Streams;
+using Windows.UI.Core;
 using Windows.UI.StartScreen;
 using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
@@ -76,9 +78,93 @@ namespace BrowserClient
         protected override void OnNavigatedTo(NavigationEventArgs e)
         {
             base.OnNavigatedTo(e);
+            RegisterBackHandlers();
             var launchUrl = e.Parameter as string;
             if (!string.IsNullOrWhiteSpace(launchUrl))
                 OpenPinnedUrl(launchUrl);
+        }
+
+        protected override void OnNavigatedFrom(NavigationEventArgs e)
+        {
+            UnregisterBackHandlers();
+            base.OnNavigatedFrom(e);
+        }
+
+        private void RegisterBackHandlers()
+        {
+            // Windows Mobile nav-bar back button.
+            if (ApiInformation.IsTypePresent("Windows.Phone.UI.Input.HardwareButtons"))
+                Windows.Phone.UI.Input.HardwareButtons.BackPressed += HardwareButtons_BackPressed;
+
+            SystemNavigationManager.GetForCurrentView().BackRequested += SystemNavigationManager_BackRequested;
+        }
+
+        private void UnregisterBackHandlers()
+        {
+            if (ApiInformation.IsTypePresent("Windows.Phone.UI.Input.HardwareButtons"))
+                Windows.Phone.UI.Input.HardwareButtons.BackPressed -= HardwareButtons_BackPressed;
+
+            SystemNavigationManager.GetForCurrentView().BackRequested -= SystemNavigationManager_BackRequested;
+        }
+
+        private void HardwareButtons_BackPressed(object sender, Windows.Phone.UI.Input.BackPressedEventArgs e)
+        {
+            if (TryHandleBack())
+                e.Handled = true;
+        }
+
+        private void SystemNavigationManager_BackRequested(object sender, BackRequestedEventArgs e)
+        {
+            if (TryHandleBack())
+                e.Handled = true;
+        }
+
+        /// <summary>
+        /// Returns true when back was consumed in-app (do not exit).
+        /// </summary>
+        private bool TryHandleBack()
+        {
+            if (TabsOverlay.Visibility == Visibility.Visible)
+            {
+                TabsOverlay.Visibility = Visibility.Collapsed;
+                return true;
+            }
+
+            if (TextInput.Visibility == Visibility.Visible)
+            {
+                TextInput.Visibility = Visibility.Collapsed;
+                ApplyChromeVisibility();
+                return true;
+            }
+
+            if (pageTypingActive)
+            {
+                EndPageTyping();
+                return true;
+            }
+
+            if (DiscoveryPage.Visibility == Visibility.Visible)
+            {
+                DiscoveryPage.Visibility = Visibility.Collapsed;
+                ConnectPage.Visibility = Visibility.Visible;
+                try
+                {
+                    UdpDiscoveryTimer?.Dispose();
+                }
+                catch
+                {
+                }
+                return true;
+            }
+
+            // Connected browsing session: navigate remote CEF history instead of leaving the app.
+            if (ds != null && ConnectPage.Visibility != Visibility.Visible)
+            {
+                ds.NavigateBack();
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
