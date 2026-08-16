@@ -23,14 +23,15 @@ For now your phone and your server needs to be on the same network
 - [x] 2 way communication with websockets and JSON
 - [x] Render buffer forwarding to a UWP client
 - [x] Navigation events from UWP client
-- [x] Touch input events (only 1 for now) from UWP client
+- [x] Touch input events (multitouch) from UWP client
+- [x] Add to Home (pin current page to Start)
 
 ### What's needed
 - [X] Auto finding the server if on local connection (UDP discovery packets)
 - [X] Easy&secure remote connections via tunnels (Ngrok, ZeroTier, serveo)
 - [X] Auto scaling renderview based on screen resolution/rotation/UWP viewport
 - [ ] HiDPI
-- [ ] Multitouch
+- [X] Multitouch
 - [X] Text input (basic, still WIP)
 - [x] Auto save the last server address
 - [ ] Faster rendering (GPU?)
@@ -43,7 +44,7 @@ For now your phone and your server needs to be on the same network
 - [ ] Notifications
 
 ### What's needed after
-- [ ] Tabs
+- [X] Tabs
 - [ ] In Private/Incognito
 - [ ] Back/Forward
 - [ ] General browser stuff

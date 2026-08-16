@@ -95,9 +95,79 @@ namespace BrowserServer
             throw new Exception("No network adapters with an IPv4 address in the system!");
         }
 
+        /// <summary>
+        /// Returns true when <paramref name="input"/> should be loaded as a page URL.
+        /// Outputs an absolute http(s) URL (adds https:// when the scheme is missing).
+        /// </summary>
+        public static bool TryGetNavigableUrl(string input, out string url)
+        {
+            url = null;
+            if (string.IsNullOrWhiteSpace(input))
+                return false;
+
+            input = input.Trim();
+
+            if (Uri.TryCreate(input, UriKind.Absolute, out var absolute)
+                && IsHttpScheme(absolute))
+            {
+                url = absolute.AbsoluteUri;
+                return true;
+            }
+
+            // "example.com", "www.example.com/path", "192.168.0.1", "localhost:8081"
+            if (!LooksLikeHostOrUrl(input))
+                return false;
+
+            if (Uri.TryCreate("https://" + input, UriKind.Absolute, out var withHttps)
+                && IsHttpScheme(withHttps)
+                && !string.IsNullOrEmpty(withHttps.Host))
+            {
+                url = withHttps.AbsoluteUri;
+                return true;
+            }
+
+            return false;
+        }
+
+        [Obsolete("Use TryGetNavigableUrl")]
         public static bool IsUrl(string s)
         {
-            return Regex.IsMatch(s, @"^[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&\/\/=]*)$");
+            return TryGetNavigableUrl(s, out _);
+        }
+
+        private static bool IsHttpScheme(Uri uri)
+        {
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+        }
+
+        private static bool LooksLikeHostOrUrl(string s)
+        {
+            if (s.IndexOf(' ') >= 0)
+                return false;
+
+            var hostPart = s;
+            var slash = s.IndexOf('/');
+            if (slash >= 0)
+                hostPart = s.Substring(0, slash);
+
+            var colon = hostPart.LastIndexOf(':');
+            if (colon > 0 && colon < hostPart.Length - 1)
+            {
+                var portText = hostPart.Substring(colon + 1);
+                if (int.TryParse(portText, out _))
+                    hostPart = hostPart.Substring(0, colon);
+            }
+
+            if (hostPart.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (IPAddress.TryParse(hostPart, out _))
+                return true;
+
+            // Require at least one dot (example.com) and a plausible TLD-ish label.
+            return Regex.IsMatch(
+                hostPart,
+                @"^(?i)([a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$");
         }
         //helpers
     }

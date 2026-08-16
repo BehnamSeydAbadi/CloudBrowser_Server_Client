@@ -6,7 +6,7 @@
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
     <ProjectGuid>{91782C50-CE52-467C-A1DA-12AB4D3DBD09}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <RootNamespace>BrowserServer</RootNamespace>
@@ -17,7 +17,32 @@
     <Deterministic>true</Deterministic>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
+    <!-- CefSharp requires an explicit x86/x64 platform (not AnyCPU). -->
+    <CefSharpAnyCpuSupport>false</CefSharpAnyCpuSupport>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\x64\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\x64\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <!-- Keep AnyCPU configs working but force x64 native CefSharp bits. -->
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>x64</PlatformTarget>
     <DebugSymbols>true</DebugSymbols>
@@ -27,15 +52,19 @@
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+    <CefSharpPlatformTargetOverride>x64</CefSharpPlatformTargetOverride>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PlatformTarget>x64</PlatformTarget>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+    <CefSharpPlatformTargetOverride>x64</CefSharpPlatformTargetOverride>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="CefSharp, Version=113.1.40.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
@@ -77,11 +106,15 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="BrowserHandlers.cs" />
+    <Compile Include="StreamingAudioHandler.cs" />
     <Compile Include="JavascriptFunctions.cs" />
     <Compile Include="KeyFinder.cs" />
+    <Compile Include="MobileChromeIdentity.cs" />
     <Compile Include="NetworkManager.cs" />
     <Compile Include="Packets.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="TabManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -99,4 +132,8 @@
     <Error Condition="!Exists('..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets'))" />
   </Target>
   <Import Project="..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets" Condition="Exists('..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets')" />
+  <!-- Guarantee CEF native files (libcef.dll etc.) land next to the exe. -->
+  <Target Name="CopyCefRedistAfterBuild" AfterTargets="Build">
+    <CallTarget Targets="CefRedist64CopyResources" Condition="'$(PlatformTarget)' == 'x64' Or '$(CefSharpPlatformTargetOverride)' == 'x64'" />
+  </Target>
 </Project>

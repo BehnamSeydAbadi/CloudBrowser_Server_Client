@@ -4,4 +4,51 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:BrowserClient">
 
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+
+                <!-- Follows Windows light theme -->
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="PageBgBrush" Color="#FFF7F7F8"/>
+                    <SolidColorBrush x:Key="ChromeBgBrush" Color="#FFF7F7F8"/>
+                    <SolidColorBrush x:Key="ChromeLineBrush" Color="#14000000"/>
+                    <SolidColorBrush x:Key="PillBrush" Color="#FFE8E8ED"/>
+                    <SolidColorBrush x:Key="IconBrush" Color="#FF1C1C1E"/>
+                    <SolidColorBrush x:Key="MutedBrush" Color="#FF8E8E93"/>
+                    <SolidColorBrush x:Key="ConnectBgBrush" Color="#FFF2F2F7"/>
+                    <SolidColorBrush x:Key="ConnectFieldBrush" Color="#FFE8E8ED"/>
+                    <SolidColorBrush x:Key="ConnectAccentBrush" Color="#FF0078D7"/>
+                    <SolidColorBrush x:Key="ConnectPrimaryForegroundBrush" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="ConnectSecondaryForegroundBrush" Color="#FF1C1C1E"/>
+                    <SolidColorBrush x:Key="TabsOverlayBrush" Color="#F2F7F7F8"/>
+                    <SolidColorBrush x:Key="TabActiveBrush" Color="#FFE8E8ED"/>
+                    <SolidColorBrush x:Key="TabInactiveBrush" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="TabTitleBrush" Color="#FF1C1C1E"/>
+                    <SolidColorBrush x:Key="TabSubtitleBrush" Color="#FF8E8E93"/>
+                </ResourceDictionary>
+
+                <!-- Follows Windows dark theme -->
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="PageBgBrush" Color="#FF000000"/>
+                    <SolidColorBrush x:Key="ChromeBgBrush" Color="#FF1C1C1E"/>
+                    <SolidColorBrush x:Key="ChromeLineBrush" Color="#33FFFFFF"/>
+                    <SolidColorBrush x:Key="PillBrush" Color="#FF2C2C2E"/>
+                    <SolidColorBrush x:Key="IconBrush" Color="#FFF2F2F7"/>
+                    <SolidColorBrush x:Key="MutedBrush" Color="#FF8E8E93"/>
+                    <SolidColorBrush x:Key="ConnectBgBrush" Color="#FF000000"/>
+                    <SolidColorBrush x:Key="ConnectFieldBrush" Color="#FF2C2C2E"/>
+                    <SolidColorBrush x:Key="ConnectAccentBrush" Color="#FF0A84FF"/>
+                    <SolidColorBrush x:Key="ConnectPrimaryForegroundBrush" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="ConnectSecondaryForegroundBrush" Color="#FFF2F2F7"/>
+                    <SolidColorBrush x:Key="TabsOverlayBrush" Color="#F21C1C1E"/>
+                    <SolidColorBrush x:Key="TabActiveBrush" Color="#FF3A3A3C"/>
+                    <SolidColorBrush x:Key="TabInactiveBrush" Color="#FF2C2C2E"/>
+                    <SolidColorBrush x:Key="TabTitleBrush" Color="#FFF2F2F7"/>
+                    <SolidColorBrush x:Key="TabSubtitleBrush" Color="#FF8E8E93"/>
+                </ResourceDictionary>
+
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
 </Application>

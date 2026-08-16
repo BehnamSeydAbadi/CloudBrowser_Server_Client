@@ -1,8 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace BrowserServer
 {
@@ -40,7 +36,7 @@ json.text = document.activeElement.value;
 return JSON.stringify(json);
                     })();";
 
-public static string GetActiveElementText = @"(
+        public static string GetActiveElementText = @"(
 
 function ()
 {
@@ -49,7 +45,7 @@ return document.activeElement.value;
 )();
 ";
 
-public static string GetFocusActiveElementText = @"(
+        public static string GetFocusActiveElementText = @"(
 
 function ()
 {
@@ -59,8 +55,63 @@ return document.activeElement.value;
 )();
 ";
 
+        /// <summary>
+        /// Insert text into the focused field. Uses the native value setter so React-controlled inputs update.
+        /// Pass already JSON-serialized string literal for <paramref name="jsonTextLiteral"/> (including quotes).
+        /// </summary>
+        public static string InsertText(string jsonTextLiteral)
+        {
+            return @"
+(function(){
+  var text = " + jsonTextLiteral + @";
+  var el = document.activeElement;
+  if (!el) return false;
+  if (el.isContentEditable) {
+    document.execCommand('insertText', false, text);
+    return true;
+  }
+  var tag = (el.tagName || '').toLowerCase();
+  if (tag !== 'input' && tag !== 'textarea') return false;
+  var start = (typeof el.selectionStart === 'number') ? el.selectionStart : (el.value || '').length;
+  var end = (typeof el.selectionEnd === 'number') ? el.selectionEnd : start;
+  var value = el.value || '';
+  var next = value.slice(0, start) + text + value.slice(end);
+  var proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc && desc.set) desc.set.call(el, next); else el.value = next;
+  try { el.selectionStart = el.selectionEnd = start + text.length; } catch (e) {}
+  try { el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text })); }
+  catch (e1) { el.dispatchEvent(new Event('input', { bubbles: true })); }
+  return true;
+})();";
+        }
+
+        public static string Backspace =
+@"
+(function(){
+  var el = document.activeElement;
+  if (!el) return false;
+  if (el.isContentEditable) {
+    document.execCommand('delete', false, null);
+    return true;
+  }
+  var tag = (el.tagName || '').toLowerCase();
+  if (tag !== 'input' && tag !== 'textarea') return false;
+  var start = (typeof el.selectionStart === 'number') ? el.selectionStart : (el.value || '').length;
+  var end = (typeof el.selectionEnd === 'number') ? el.selectionEnd : start;
+  var value = el.value || '';
+  if (start === end) {
+    if (start <= 0) return false;
+    start = start - 1;
+  }
+  var next = value.slice(0, start) + value.slice(end);
+  var proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc && desc.set) desc.set.call(el, next); else el.value = next;
+  try { el.selectionStart = el.selectionEnd = start; } catch (e) {}
+  try { el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'deleteContentBackward', data: null })); }
+  catch (e1) { el.dispatchEvent(new Event('input', { bubbles: true })); }
+  return true;
+})();";
     }
-
-
-
 }

@@ -6,16 +6,10 @@ using System.IO;
 using WebSocketSharp;
 using WebSocketSharp.Server;
 using CefSharp.Structs;
-using System.Runtime.InteropServices;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Drawing.Imaging;
-using NgrokApi;
 using System.Threading;
-using System.Collections;
-using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using CefSharp.Enums;
 
@@ -23,70 +17,173 @@ namespace BrowserServer
 {
     class Program
     {
-        static ChromiumWebBrowser browser;
-        
         public class test : WebSocketBehavior
         {
             //tested on 950XL
             public static int ScalingFactor = 2;
             protected override void OnOpen()
             {
-                browser.Reload();
+                // Client (re)connected — clear any stuck frame-capture lock from a previous session.
+                ResetCaptureState();
+                TabManager.EnsureInitialTab();
+                TabManager.EnsureActiveBrowserHealthy();
+                TabManager.BroadcastTabList();
+                var active = TabManager.Active;
+                if (active != null)
+                    TabManager.BroadcastNavigatedUrl(active.Url);
             }
+
             protected override void OnMessage(MessageEventArgs e)
             {
                 var packet = JsonConvert.DeserializeObject<CommPacket>(e.Data);
+                var browser = TabManager.ActiveBrowser;
+                if (browser == null && packet.PType != PacketType.CreateTab)
+                    return;
+
                 switch (packet.PType)
                 {
+                    case PacketType.CreateTab:
+                        TabManager.CreateTab();
+                        break;
+
+                    case PacketType.CloseTab:
+                        if (!string.IsNullOrEmpty(packet.JSONData))
+                            TabManager.CloseTab(packet.JSONData);
+                        break;
+
+                    case PacketType.SwitchTab:
+                        if (!string.IsNullOrEmpty(packet.JSONData))
+                            TabManager.SwitchTab(packet.JSONData);
+                        break;
+
                     case PacketType.TextInputSend:
                         Console.WriteLine(packet.JSONData);
-                        var textscript = @"(function (){document.activeElement.value='"+packet.JSONData+"'})();";
+                        var textscript = @"(function (){document.activeElement.value='" + packet.JSONData + "'})();";
 
-                        var textres = browser.EvaluateScriptAsync(textscript).ContinueWith(t =>{
-                            
-                            browser.GetBrowserHost().SendKeyEvent(new KeyEvent {
+                        browser.EvaluateScriptAsync(textscript).ContinueWith(t =>
+                        {
+                            browser.GetBrowserHost().SendKeyEvent(new KeyEvent
+                            {
                                 WindowsKeyCode = 0x0D,
                                 FocusOnEditableField = true,
                                 IsSystemKey = false,
                                 Type = KeyEventType.RawKeyDown
                             });
-                           
                         });
                         break;
-
 
                     case PacketType.ACK:
                         Console.WriteLine("ACK");
                         break;
 
-
                     case PacketType.SendKey:
-                        Console.WriteLine(packet.JSONData+"KEY");
-                        
-                        browser.GetBrowserHost().SendKeyEvent(new KeyEvent
                         {
-                            WindowsKeyCode = int.Parse(packet.JSONData),
-                            FocusOnEditableField = false,
-                            IsSystemKey = false,
-                            Type = KeyEventType.Char
-                        });
-                        
-                        
-                        //JsonConvert.DeserializeObject< Windows.System.VirtualKey>()á
-                        
+                            var host = browser.GetBrowserHost();
+                            host.SetFocus(true);
+
+                            var raw = packet.JSONData ?? "";
+                            if (raw.TrimStart().StartsWith("{"))
+                            {
+                                var keyObj = JObject.Parse(raw);
+                                var type = (keyObj.Value<string>("type") ?? "char").ToLowerInvariant();
+
+                                if (type == "insert")
+                                {
+                                    var text = keyObj.Value<string>("text") ?? "";
+                                    if (text.Length > 0)
+                                    {
+                                        var script = JavascriptFunctions.InsertText(JsonConvert.SerializeObject(text));
+                                        browser.EvaluateScriptAsync(script);
+                                    }
+                                    break;
+                                }
+
+                                if (type == "backspace")
+                                {
+                                    browser.EvaluateScriptAsync(JavascriptFunctions.Backspace);
+                                    break;
+                                }
+
+                                if (type == "enter")
+                                {
+                                    // Prefer key events for form submit / search.
+                                    host.SendKeyEvent(new KeyEvent
+                                    {
+                                        WindowsKeyCode = 0x0D,
+                                        NativeKeyCode = 0x0D,
+                                        FocusOnEditableField = true,
+                                        IsSystemKey = false,
+                                        Type = KeyEventType.RawKeyDown
+                                    });
+                                    host.SendKeyEvent(new KeyEvent
+                                    {
+                                        WindowsKeyCode = 0x0D,
+                                        NativeKeyCode = 0x0D,
+                                        FocusOnEditableField = true,
+                                        IsSystemKey = false,
+                                        Type = KeyEventType.Char
+                                    });
+                                    host.SendKeyEvent(new KeyEvent
+                                    {
+                                        WindowsKeyCode = 0x0D,
+                                        NativeKeyCode = 0x0D,
+                                        FocusOnEditableField = true,
+                                        IsSystemKey = false,
+                                        Type = KeyEventType.KeyUp
+                                    });
+                                    break;
+                                }
+
+                                var code = keyObj.Value<int>("code");
+                                KeyEventType eventType = KeyEventType.Char;
+                                switch (type)
+                                {
+                                    case "down":
+                                        eventType = KeyEventType.RawKeyDown;
+                                        break;
+                                    case "up":
+                                        eventType = KeyEventType.KeyUp;
+                                        break;
+                                }
+
+                                host.SendKeyEvent(new KeyEvent
+                                {
+                                    WindowsKeyCode = code,
+                                    NativeKeyCode = code,
+                                    FocusOnEditableField = true,
+                                    IsSystemKey = false,
+                                    Type = eventType
+                                });
+                            }
+                            else
+                            {
+                                var code = int.Parse(raw.Trim('"'));
+                                host.SendKeyEvent(new KeyEvent
+                                {
+                                    WindowsKeyCode = code,
+                                    NativeKeyCode = code,
+                                    FocusOnEditableField = true,
+                                    IsSystemKey = false,
+                                    Type = KeyEventType.Char
+                                });
+                            }
+                        }
                         break;
 
                     case PacketType.Navigation:
-                        Console.WriteLine(NetworkManager.IsUrl(packet.JSONData));
-                        if (NetworkManager.IsUrl(packet.JSONData))
                         {
-                            browser.LoadUrl(packet.JSONData);
+                            var input = (packet.JSONData ?? "").Trim();
+                            if (NetworkManager.TryGetNavigableUrl(input, out var navUrl))
+                            {
+                                Console.WriteLine("Navigate URL: " + navUrl);
+                                browser.LoadUrl(navUrl);
+                            }
+                            else
+                            {
+                                Console.WriteLine("Search: " + input);
+                                browser.LoadUrl("https://www.google.com/search?q=" + Uri.EscapeDataString(input));
+                            }
                         }
-                        else
-                        {
-                            browser.LoadUrl("https://www.google.com/search?q=" + packet.JSONData);
-                        }
-                  
                         break;
 
                     case PacketType.NavigateBack:
@@ -96,28 +193,26 @@ namespace BrowserServer
                         if (browser.CanGoForward) browser.Forward();
                         break;
 
-
-
                     case PacketType.SizeChange:
                         var jsonObject = JObject.Parse(packet.JSONData);
-                        var w = jsonObject.Value<int>("Width");
-                        var h = jsonObject.Value<int>("Height");
+                        // Match BrowserClient ScaleRect exactly (already excludes bottom chrome/navbars).
+                        var clientW = Math.Max(1, (int)Math.Round(jsonObject.Value<double>("Width")));
+                        var clientH = Math.Max(1, (int)Math.Round(jsonObject.Value<double>("Height")));
+                        var scaleToken = jsonObject["Scale"];
+                        var clientScale = scaleToken != null && scaleToken.Type != JTokenType.Null
+                            ? (float)scaleToken.Value<double>()
+                            : ScalingFactor;
+                        if (clientScale < 1f)
+                            clientScale = 1f;
 
-                        browser.Size = new System.Drawing.Size(w * ScalingFactor, h * ScalingFactor);
-
-                        Console.WriteLine("windows resized" + w + " " + h);
-
-
+                        TabManager.SetViewport(clientW, clientH, clientScale);
                         break;
 
-
-                    //stale multitouch, track touches on cliend only and forward them....
                     case PacketType.TouchDown:
-
                         var t_down = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
                         var press = new TouchEvent()
                         {
-                            Id = (int)0,
+                            Id = (int)t_down.id,
                             X = (float)t_down.px * browser.Size.Width,
                             Y = (float)t_down.py * browser.Size.Height,
                             PointerType = CefSharp.Enums.PointerType.Touch,
@@ -125,17 +220,13 @@ namespace BrowserServer
                             Type = CefSharp.Enums.TouchEventType.Pressed,
                         };
                         browser.GetBrowser().GetHost().SendTouchEvent(press);
-                        
-
                         break;
 
                     case PacketType.TouchUp:
-
-
                         var t_up = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
                         var up = new TouchEvent()
                         {
-                            Id = (int)0,
+                            Id = (int)t_up.id,
                             X = (float)t_up.px * browser.Size.Width,
                             Y = (float)t_up.py * browser.Size.Height,
                             PointerType = CefSharp.Enums.PointerType.Touch,
@@ -144,12 +235,12 @@ namespace BrowserServer
                         };
                         browser.GetBrowser().GetHost().SendTouchEvent(up);
                         break;
-                    case PacketType.TouchMoved:
 
+                    case PacketType.TouchMoved:
                         var t_move = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
                         var move = new TouchEvent()
                         {
-                            Id = (int)0,
+                            Id = (int)t_move.id,
                             X = (float)t_move.px * browser.Size.Width,
                             Y = (float)t_move.py * browser.Size.Height,
                             PointerType = CefSharp.Enums.PointerType.Touch,
@@ -157,7 +248,6 @@ namespace BrowserServer
                             Type = CefSharp.Enums.TouchEventType.Moved,
                         };
                         browser.GetBrowser().GetHost().SendTouchEvent(move);
-                        // Console.WriteLine(move.Id);
                         break;
 
                     default:
@@ -167,39 +257,39 @@ namespace BrowserServer
         }
 
         static WebSocketServer server;
-        static IFrame mainFrame;
+
         static void Main(string[] margs)
         {
-            
             server = new WebSocketServer("ws://0.0.0.0:8081");
             //ngrok compatible ngrok.exe tcp 8081 -> 
             server.AllowForwardedRequest = true;
             server.AddWebSocketService<test>("/");
             server.Start();
 
-            //var ngrok = new Ngrok("");
-            //https://www.snappymaria.com/misc/TouchEventTest.html
+            TabManager.Server = server;
+            TabManager.CreateRenderHandler = (browser, tabId) => new TestRHI(browser, tabId);
+
             const string testUrl = "https://www.google.com/";
             var settings = new CefSettings()
             {
                 CachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp\\Cache"),
-
+                // Real Android Google Chrome UA (Chrome still includes AppleWebKit tokens by design).
+                UserAgent = MobileChromeIdentity.UserAgent,
+                AcceptLanguageList = "en-US,en",
             };
 
-            //https://gist.github.com/jankurianski/f3419d4580517516c24b?
-
             settings.CefCommandLineArgs["touch-events"] = "enabled";
-            settings.LogSeverity = LogSeverity.Disable;
+            // Disable GPU in offscreen — reduces crashes on heavy sites (maps, modern SPAs).
+            settings.CefCommandLineArgs["disable-gpu"] = "1";
+            settings.CefCommandLineArgs["disable-gpu-compositing"] = "1";
+            // Allow media autoplay so remote audio can start without a desktop gesture.
+            settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
+            settings.LogSeverity = LogSeverity.Warning;
+            settings.LogFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp\\debug.log");
             settings.MultiThreadedMessageLoop = true;
             Cef.Initialize(settings, performDependencyCheck: true, browserProcessHandler: null);
-            browser = new ChromiumWebBrowser(testUrl);
-            browser.Size = new System.Drawing.Size(1440 / 2, 1248);
-            browser.LoadingStateChanged += Browser_LoadingStateChanged;
-            browser.RenderHandler = new TestRHI(browser);
-            //browser.
-            //browser.RenderProcessMessageHandler = new RenderProcessMessageHandler();
-            //  browser.Paint += CefPaint;
 
+            TabManager.CreateTab(testUrl);
 
             Console.Clear();
             Console.WriteLine("Browser server is now running, you can connect to it via ws://" + NetworkManager.GetLocalIPAddress() + ":8081");
@@ -216,54 +306,80 @@ namespace BrowserServer
             Console.WriteLine("7. you'll need the url starting with tcp://");
             Console.WriteLine("8. enter the url in the UWP application as the server adress and connect.");
             Console.WriteLine("9. congratulations! you just connected over the internet");
-            //Console.WriteLine("3. add your ngrok auth-token https://dashboard.ngrok.com/get-started/setup");
-            //Console.WriteLine("for example in your command ");
 
             NetworkManager.StartUdpDiscoveryServer();
+            // Video ~20fps; audio flush more often so PCM does not pile up / stutter.
             var timer = new Timer(Callback, null, 0, 50);
-
-            //Dispose the timer
-
-           // KeyFinder.TestKeys();
-
+            var audioTimer = new Timer(_ => StreamingAudioHandler.FlushOutbound(), null, 0, 10);
 
             Console.ReadKey();
+            audioTimer.Dispose();
             Cef.Shutdown();
             timer.Dispose();
-        }
-
-        private static void Browser_LoadingStateChanged(object sender, LoadingStateChangedEventArgs e)
-        {
-            if (e.IsLoading)
-            {
-                var cp = new TextPacket
-                {
-                    PType = TextPacketType.NavigatedUrl,
-                    text = browser.Address
-                };
-                server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(cp));
-            }
         }
 
         //todo: some smarter connection
         //client ACK the image and sends a req for the next.
 
+        static int captureInFlight = 0;
+        static int captureStartedTick = 0;
+        const int CaptureStuckMs = 3000;
+
+        public static void ResetCaptureState()
+        {
+            Interlocked.Exchange(ref captureInFlight, 0);
+            captureStartedTick = 0;
+        }
 
         static void Callback(object state)
         {
             try
             {
+                var browser = TabManager.ActiveBrowser;
+                if (browser == null || !browser.IsBrowserInitialized)
+                    return;
 
-                browser.CaptureScreenshotAsync(CefSharp.DevTools.Page.CaptureScreenshotFormat.Jpeg, 70).ContinueWith(t =>
+                // Recover if a previous capture never finished (used to cause permanent black screen).
+                if (Interlocked.CompareExchange(ref captureInFlight, 1, 0) != 0)
                 {
-                    server.WebSocketServices.Broadcast(t.Result);
+                    var started = Volatile.Read(ref captureStartedTick);
+                    if (started != 0 && (Environment.TickCount - started) > CaptureStuckMs)
+                    {
+                        Console.WriteLine("Frame capture stuck — resetting");
+                        Interlocked.Exchange(ref captureInFlight, 0);
+                    }
+                    return;
                 }
-                );
+
+                captureStartedTick = Environment.TickCount;
+
+                try
+                {
+                    // Use paint-buffer snapshot (no DevTools). CaptureScreenshotAsync hangs on heavy SPAs
+                    // and then leaves the stream black until the server is restarted.
+                    using (var bitmap = browser.ScreenshotOrNull())
+                    {
+                        if (bitmap == null || server == null)
+                            return;
+
+                        var encoderParameters = new EncoderParameters(1);
+                        encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 70L);
+                        using (var stream = new MemoryStream())
+                        {
+                            bitmap.Save(stream, GetEncoder(ImageFormat.Jpeg), encoderParameters);
+                            server.WebSocketServices.Broadcast(stream.ToArray());
+                        }
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref captureInFlight, 0);
+                }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                throw;
-                //die silently
+                Interlocked.Exchange(ref captureInFlight, 0);
+                Console.WriteLine("Frame capture error: " + ex.Message);
             }
         }
 
@@ -271,9 +387,6 @@ namespace BrowserServer
         private static void CefPaint(object sender, OnPaintEventArgs e)
         {
             frameNum++;
-            // Console.WriteLine("RENDER FRAME"+frameNum.ToString());
-
-            //var browserImage = new Bitmap(e.Width, e.Height, 4 * e.Width, System.Drawing.Imaging.PixelFormat.Format32bppRgb, e.BufferHandle);
             var browserImage = new Bitmap(e.Width, e.Height, 4 * e.Width, System.Drawing.Imaging.PixelFormat.Format32bppRgb, e.BufferHandle);
             byte[] bufferBytes;
             var encoderParameters = new EncoderParameters(1);
@@ -285,6 +398,7 @@ namespace BrowserServer
             }
             server.WebSocketServices.Broadcast(bufferBytes);
         }
+
         private static ImageCodecInfo GetEncoder(ImageFormat format)
         {
             var codecs = ImageCodecInfo.GetImageDecoders();
@@ -298,24 +412,27 @@ namespace BrowserServer
             return null;
         }
 
-
         //TODO: accelerated Draw
         // Forward the renderbuffer from here instead of screenshot?
         public class TestRHI : DefaultRenderHandler
         {
             private ChromiumWebBrowser browser;
+            private readonly string tabId;
 
-            public TestRHI(ChromiumWebBrowser browser) : base(browser)
+            public TestRHI(ChromiumWebBrowser browser, string tabId) : base(browser)
             {
                 this.browser = browser;
+                this.tabId = tabId;
             }
 
             public override void OnVirtualKeyboardRequested(IBrowser browser, TextInputMode inputMode)
             {
                 base.OnVirtualKeyboardRequested(browser, inputMode);
 
+                if (TabManager.ActiveTabId != tabId)
+                    return;
 
-                Console.WriteLine("Virtual Keyboard Requested for "+inputMode);
+                Console.WriteLine("Virtual Keyboard Requested for " + inputMode);
                 if (inputMode == TextInputMode.None)
                 {
                     server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
@@ -325,32 +442,14 @@ namespace BrowserServer
                 }
                 else
                 {
-                    var response = browser.EvaluateScriptAsync(JavascriptFunctions.GetActiveElementText).ContinueWith(t =>
+                    // Signal client to show the OS keyboard and forward keys into this focused field.
+                    server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
                     {
-                    //https://stackoverflow.com/questions/544141/how-to-convert-a-character-in-to-equivalent-system-windows-input-key-enum-value
-                    //https://learn.microsoft.com/hu-hu/windows/win32/api/winuser/nf-winuser-vkkeyscanexa?redirectedfrom=MSDN
-
-                        /*
-                        Console.WriteLine((string)t.Result.Result);
-                        this.browser.GetBrowserHost().SendKeyEvent(new KeyEvent
-                        {
-                            WindowsKeyCode = 65,
-                            FocusOnEditableField = false,
-                            IsSystemKey = false,
-                            Type = KeyEventType.Char
-                        });
-                        Console.WriteLine("sent key");
-                        
-    */
-                        server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-                        {
-                            PType = TextPacketType.TextInputContent,
-                            text = (string)t.Result.Result
-                        }));
-                    });
+                        PType = TextPacketType.TextInputContent,
+                        text = ""
+                    }));
                 }
             }
         }
-
     }
 }

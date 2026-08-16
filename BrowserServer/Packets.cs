@@ -30,7 +30,9 @@ namespace BrowserServer
         NavigatedUrl,
         TextInputContent,
         TextInputSend,
-        TextInputCancel
+        TextInputCancel,
+        TabList,
+        AudioStop
     }
 
     public enum PacketType
@@ -45,7 +47,23 @@ namespace BrowserServer
         TextInputSend,
         NavigateForward,
         NavigateBack,
-        SendKey
+        SendKey,
+        CreateTab,
+        CloseTab,
+        SwitchTab
+    }
+
+    public class TabInfo
+    {
+        public string id;
+        public string title;
+        public string url;
+    }
+
+    public class TabListPayload
+    {
+        public string activeId;
+        public List<TabInfo> tabs;
     }
     public struct DiscoveryPacket
     {

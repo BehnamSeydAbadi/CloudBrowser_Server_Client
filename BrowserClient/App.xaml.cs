@@ -68,6 +68,12 @@ namespace BrowserClient
                     // parameter
                     rootFrame.Navigate(typeof(MainPage), e.Arguments);
                 }
+                else if (!string.IsNullOrEmpty(e.Arguments))
+                {
+                    // Already running — open the pinned site from a Start tile.
+                    var page = rootFrame.Content as MainPage;
+                    page?.OpenPinnedUrl(e.Arguments);
+                }
                 // Ensure the current window is active
                 Window.Current.Activate();
             }
