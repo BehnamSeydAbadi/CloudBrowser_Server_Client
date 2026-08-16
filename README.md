@@ -38,6 +38,7 @@ For now your phone and your server needs to be on the same network
 - [x] Audio playback forwarding
 - [X] Tabs
 - [X] Back/Forward
+- [X] File downloads (Till 200MB is funtional)
 
 ### What's needed
 - [ ] HiDPI
@@ -45,8 +46,8 @@ For now your phone and your server needs to be on the same network
 - [ ] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
 - [ ] Configurable streaming quality (ondemand rendering?)
 - [ ] File uploads
-- [ ] File downloads
-- [x] Camera & microphone (basic getUserMedia via phone)
+- [ ] Large File downloads
+- [ ] Camera & microphone (basic getUserMedia via phone)
 - [ ] Notifications
 - [ ] In Private/Incognito
 - [ ] General browser stuff
