@@ -42,6 +42,7 @@ namespace BrowserClient
                 Array.Clear(readbuffer.Array, 0, readbuffer.Array.Length);
 
                 var res = await sock.ReceiveAsync(readbuffer, CancellationToken.None);
+                var messageType = res.MessageType;
                 // Reassemble continuation frames if any.
                 int total = res.Count;
                 while (!res.EndOfMessage && sock.State == WebSocketState.Open)
@@ -52,7 +53,17 @@ namespace BrowserClient
                     total += res.Count;
                 }
 
-                switch (res.MessageType)
+                // AUDI magic is always binary — protects against wrong MessageType after fragmentation.
+                if (total >= 4 &&
+                    readbuffer.Array[0] == (byte)'A' &&
+                    readbuffer.Array[1] == (byte)'U' &&
+                    readbuffer.Array[2] == (byte)'D' &&
+                    readbuffer.Array[3] == (byte)'I')
+                {
+                    messageType = WebSocketMessageType.Binary;
+                }
+
+                switch (messageType)
                 {
                     case WebSocketMessageType.Binary:
                         if (total >= 4 &&
@@ -71,7 +82,16 @@ namespace BrowserClient
                         {
                             var jpeg = new byte[total];
                             System.Buffer.BlockCopy(readbuffer.Array, 0, jpeg, 0, total);
-                            FrameRecived?.Invoke(this, ConvertToBitmapImage(jpeg).Result);
+                            // BitmapImage must be created on the UI sync context (WM10/UWP).
+                            // Stay on the context captured by StartRecive — do not ConfigureAwait(false).
+                            try
+                            {
+                                var bitmap = await ConvertToBitmapImage(jpeg);
+                                FrameRecived?.Invoke(this, bitmap);
+                            }
+                            catch
+                            {
+                            }
                         }
                         break;
                     case WebSocketMessageType.Close:
@@ -378,9 +398,10 @@ namespace BrowserClient
             {
                 using (DataWriter writer = new DataWriter(ms.GetOutputStreamAt(0)))
                 {
-                    writer.WriteBytes((byte[])image);
+                    writer.WriteBytes(image);
                     await writer.StoreAsync();
                 }
+                ms.Seek(0);
                 bitmapimage = new BitmapImage();
                 bitmapimage.SetSource(ms);
             }

@@ -1,4 +1,5 @@
 using CefSharp;
+using CefSharp.Enums;
 using CefSharp.Handler;
 using CefSharp.Structs;
 using System;
@@ -57,8 +58,6 @@ namespace BrowserServer
 
         public static void EnqueueStop()
         {
-            // Stop is a text packet; send immediately via queue as UTF8 bytes is awkward —
-            // broadcast JSON from Flush path using a side flag instead.
             try
             {
                 var json = Newtonsoft.Json.JsonConvert.SerializeObject(new TextPacket
@@ -75,7 +74,8 @@ namespace BrowserServer
 
         protected override bool GetAudioParameters(IWebBrowser chromiumWebBrowser, IBrowser browser, ref AudioParameters parameters)
         {
-            // Returning true enables capture (CEF will not play locally; we forward instead).
+            // Prefer stereo 48k — widely supported by phone AudioGraph devices.
+            parameters = new AudioParameters(ChannelLayout.LayoutStereo, 48000, 480);
             return true;
         }
 
@@ -97,14 +97,16 @@ namespace BrowserServer
 
             try
             {
-                var pcm = InterleaveFloatPlanarToS16(data, channels, noOfFrames);
+                int srcChannels = Math.Max(1, channels);
+                int outChannels;
+                var pcm = InterleaveFloatPlanarToS16(data, srcChannels, noOfFrames, out outChannels);
                 if (pcm == null || pcm.Length == 0)
                     return;
 
                 var packet = new byte[4 + 12 + pcm.Length];
                 Buffer.BlockCopy(Magic, 0, packet, 0, 4);
                 WriteInt32(packet, 4, sampleRate);
-                WriteInt32(packet, 8, channels);
+                WriteInt32(packet, 8, outChannels);
                 WriteInt32(packet, 12, noOfFrames);
                 Buffer.BlockCopy(pcm, 0, packet, 16, pcm.Length);
 
@@ -142,27 +144,48 @@ namespace BrowserServer
             Console.WriteLine("Audio error tab={0}: {1}", tabId, errorMessage);
         }
 
-        private static byte[] InterleaveFloatPlanarToS16(IntPtr data, int channelCount, int frames)
+        private static byte[] InterleaveFloatPlanarToS16(IntPtr data, int channelCount, int frames, out int outChannels)
         {
             // data is float** — one contiguous buffer pointer per channel (CefSharp / CEF).
-            var pcm = new byte[frames * channelCount * 2];
+            // Downmix to stereo max for mobile playback compatibility.
+            outChannels = channelCount >= 2 ? 2 : 1;
+            var pcm = new byte[frames * outChannels * 2];
             int outIndex = 0;
 
             for (int i = 0; i < frames; i++)
             {
-                for (int c = 0; c < channelCount; c++)
+                if (outChannels == 1)
                 {
-                    var channelPtr = Marshal.ReadIntPtr(data, c * IntPtr.Size);
-                    float sample = ReadFloat(channelPtr, i);
-                    if (sample > 1f) sample = 1f;
-                    else if (sample < -1f) sample = -1f;
-                    short s = (short)(sample * 32767f);
-                    pcm[outIndex++] = (byte)(s & 0xFF);
-                    pcm[outIndex++] = (byte)((s >> 8) & 0xFF);
+                    float sample = 0f;
+                    for (int c = 0; c < channelCount; c++)
+                    {
+                        var channelPtr = Marshal.ReadIntPtr(data, c * IntPtr.Size);
+                        sample += ReadFloat(channelPtr, i);
+                    }
+                    sample /= channelCount;
+                    WriteSample(pcm, ref outIndex, sample);
+                }
+                else
+                {
+                    var leftPtr = Marshal.ReadIntPtr(data, 0);
+                    var rightPtr = channelCount > 1
+                        ? Marshal.ReadIntPtr(data, IntPtr.Size)
+                        : leftPtr;
+                    WriteSample(pcm, ref outIndex, ReadFloat(leftPtr, i));
+                    WriteSample(pcm, ref outIndex, ReadFloat(rightPtr, i));
                 }
             }
 
             return pcm;
+        }
+
+        private static void WriteSample(byte[] pcm, ref int outIndex, float sample)
+        {
+            if (sample > 1f) sample = 1f;
+            else if (sample < -1f) sample = -1f;
+            short s = (short)(sample * 32767f);
+            pcm[outIndex++] = (byte)(s & 0xFF);
+            pcm[outIndex++] = (byte)((s >> 8) & 0xFF);
         }
 
         private static float ReadFloat(IntPtr channelPtr, int index)

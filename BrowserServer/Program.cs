@@ -284,6 +284,10 @@ namespace BrowserServer
             settings.CefCommandLineArgs["disable-gpu-compositing"] = "1";
             // Allow media autoplay so remote audio can start without a desktop gesture.
             settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
+            // OffScreen CefSettings adds "mute-audio" by default; without this, AudioHandler never fires.
+            settings.EnableAudio();
+            if (settings.CefCommandLineArgs.ContainsKey("mute-audio"))
+                settings.CefCommandLineArgs.Remove("mute-audio");
             settings.LogSeverity = LogSeverity.Warning;
             settings.LogFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp\\debug.log");
             settings.MultiThreadedMessageLoop = true;
@@ -293,6 +297,7 @@ namespace BrowserServer
 
             Console.Clear();
             Console.WriteLine("Browser server is now running, you can connect to it via ws://" + NetworkManager.GetLocalIPAddress() + ":8081");
+            Console.WriteLine("Audio capture: ENABLED (expect 'Audio start' when a page plays sound)");
             Console.WriteLine("Or click the Discovery button in the UWP app to autimatically find the server on your local network");
             Console.WriteLine();
             Console.WriteLine();

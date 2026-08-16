@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Windows.Media;
@@ -25,6 +26,7 @@ namespace BrowserClient
         private AudioFrameInputNode frameInput;
         private int sampleRate;
         private int channels;
+        private int nodeChannels = 2;
         private Task startTask;
         private int queuedSamples;
         private bool disposed;
@@ -41,7 +43,7 @@ namespace BrowserClient
             int ch = ReadInt32(buffer, 8);
             int frames = ReadInt32(buffer, 12);
             int pcmBytes = frames * ch * 2;
-            if (rate < 8000 || ch < 1 || frames <= 0 || 16 + pcmBytes > count)
+            if (rate < 8000 || ch < 1 || ch > 8 || frames <= 0 || 16 + pcmBytes > count)
                 return;
 
             EnsureGraphStarted(rate, ch);
@@ -70,15 +72,23 @@ namespace BrowserClient
                 float discarded;
                 while (sampleQueue.TryDequeue(out discarded)) { }
                 queuedSamples = 0;
-                DisposeGraph_NoLock();
-                startTask = null;
+                // Keep the graph warm — sites often restart audio streams (MSE). Full teardown
+                // caused long gaps / total silence while CreateAsync ran again.
+                try { frameInput?.Stop(); } catch { }
             }
         }
 
         public void Dispose()
         {
             disposed = true;
-            Stop();
+            lock (sync)
+            {
+                float discarded;
+                while (sampleQueue.TryDequeue(out discarded)) { }
+                queuedSamples = 0;
+                DisposeGraph_NoLock();
+                startTask = null;
+            }
         }
 
         private void EnsureGraphStarted(int rate, int ch)
@@ -89,12 +99,14 @@ namespace BrowserClient
                     return;
 
                 if (graph != null && sampleRate == rate && channels == ch && frameInput != null)
+                {
+                    try { frameInput.Start(); } catch { }
                     return;
+                }
 
                 if (startTask != null && !startTask.IsCompleted)
                     return;
 
-                // Format change or first start.
                 DisposeGraph_NoLock();
                 float discarded;
                 while (sampleQueue.TryDequeue(out discarded)) { }
@@ -109,24 +121,58 @@ namespace BrowserClient
         {
             try
             {
+                // Device-native graph. Forcing CEF sample rate / LowestLatency fails on many WM10 phones.
                 var settings = new AudioGraphSettings(AudioRenderCategory.Media);
-                settings.QuantumSizeSelectionMode = QuantumSizeSelectionMode.LowestLatency;
-                // Match the remote stream so we do not need resampling.
-                settings.EncodingProperties = AudioEncodingProperties.CreatePcm((uint)rate, (uint)ch, 32);
+                settings.QuantumSizeSelectionMode = QuantumSizeSelectionMode.SystemDefault;
 
                 var createResult = await AudioGraph.CreateAsync(settings);
                 if (createResult.Status != AudioGraphCreationStatus.Success || disposed)
+                {
+                    Debug.WriteLine("AudioGraph create failed: " + createResult.Status);
                     return;
+                }
 
                 var newGraph = createResult.Graph;
                 var outputResult = await newGraph.CreateDeviceOutputNodeAsync();
                 if (outputResult.Status != AudioDeviceNodeCreationStatus.Success || disposed)
                 {
+                    Debug.WriteLine("AudioDeviceOutput create failed: " + outputResult.Status);
                     newGraph.Dispose();
                     return;
                 }
 
-                var newInput = newGraph.CreateFrameInputNode(newGraph.EncodingProperties);
+                AudioFrameInputNode newInput = null;
+                int useChannels = ch;
+
+                // Prefer a node matching the remote stream; AudioGraph resamples to the device.
+                try
+                {
+                    var nodeProps = AudioEncodingProperties.CreatePcm((uint)rate, (uint)ch, 32);
+                    nodeProps.Subtype = MediaEncodingSubtypes.Float;
+                    newInput = newGraph.CreateFrameInputNode(nodeProps);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("FrameInput float format failed: " + ex.Message);
+                }
+
+                if (newInput == null)
+                {
+                    try
+                    {
+                        // Same rate/channels without overriding subtype.
+                        newInput = newGraph.CreateFrameInputNode(
+                            AudioEncodingProperties.CreatePcm((uint)rate, (uint)ch, 32));
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine("FrameInput pcm format failed: " + ex.Message);
+                        outputResult.DeviceOutputNode.Dispose();
+                        newGraph.Dispose();
+                        return;
+                    }
+                }
+
                 newInput.AddOutgoingConnection(outputResult.DeviceOutputNode);
                 newInput.QuantumStarted += FrameInput_QuantumStarted;
 
@@ -145,13 +191,17 @@ namespace BrowserClient
                     frameInput = newInput;
                     sampleRate = rate;
                     channels = ch;
+                    nodeChannels = useChannels;
                 }
 
                 newGraph.Start();
                 newInput.Start();
+                Debug.WriteLine("AudioGraph started stream={0}/{1} nodeCh={2} deviceRate={3}",
+                    rate, ch, useChannels, newGraph.EncodingProperties.SampleRate);
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.WriteLine("AudioGraph start error: " + ex.Message);
                 lock (sync)
                 {
                     DisposeGraph_NoLock();
@@ -161,18 +211,19 @@ namespace BrowserClient
 
         private void FrameInput_QuantumStarted(AudioFrameInputNode sender, FrameInputNodeQuantumStartedEventArgs args)
         {
-            // RequiredSamples is frames (per channel); AudioFrame is interleaved floats.
             uint framesNeeded = (uint)args.RequiredSamples;
             if (framesNeeded == 0)
                 return;
 
-            int ch;
+            int srcCh;
+            int dstCh;
             lock (sync)
             {
-                ch = channels > 0 ? channels : 1;
+                srcCh = channels > 0 ? channels : 1;
+                dstCh = nodeChannels > 0 ? nodeChannels : srcCh;
             }
 
-            uint floatCount = framesNeeded * (uint)ch;
+            uint floatCount = framesNeeded * (uint)dstCh;
             uint byteCapacity = floatCount * sizeof(float);
             var frame = new AudioFrame(byteCapacity);
 
@@ -186,18 +237,35 @@ namespace BrowserClient
                     ((IMemoryBufferByteAccess)reference).GetBuffer(out dataInBytes, out capacityInBytes);
 
                     float* floats = (float*)dataInBytes;
-                    for (uint i = 0; i < floatCount; i++)
+                    for (uint f = 0; f < framesNeeded; f++)
                     {
-                        float sample;
-                        if (sampleQueue.TryDequeue(out sample))
+                        // Pull one source frame (srcCh samples), write dstCh samples.
+                        float left = 0f, right = 0f;
+                        for (int c = 0; c < srcCh; c++)
                         {
-                            System.Threading.Interlocked.Decrement(ref queuedSamples);
-                            floats[i] = sample;
+                            float sample;
+                            if (!sampleQueue.TryDequeue(out sample))
+                                sample = 0f;
+                            else
+                                System.Threading.Interlocked.Decrement(ref queuedSamples);
+
+                            if (c == 0) left = sample;
+                            else if (c == 1) right = sample;
+                            else
+                            {
+                                // Fold extra channels into L/R lightly.
+                                if ((c & 1) == 0) left = Clamp(left + sample * 0.5f);
+                                else right = Clamp(right + sample * 0.5f);
+                            }
                         }
-                        else
-                        {
-                            floats[i] = 0f;
-                        }
+
+                        if (srcCh == 1)
+                            right = left;
+
+                        uint baseIndex = f * (uint)dstCh;
+                        floats[baseIndex] = left;
+                        if (dstCh > 1)
+                            floats[baseIndex + 1] = right;
                     }
                 }
             }
@@ -206,9 +274,17 @@ namespace BrowserClient
             {
                 sender.AddFrame(frame);
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.WriteLine("Audio AddFrame error: " + ex.Message);
             }
+        }
+
+        private static float Clamp(float sample)
+        {
+            if (sample > 1f) return 1f;
+            if (sample < -1f) return -1f;
+            return sample;
         }
 
         private void DisposeGraph_NoLock()
