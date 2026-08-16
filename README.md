@@ -1,4 +1,4 @@
-# Windows-Mobile-Browser-Streaming
+# Windows-Mobile-Cloud-Browser
 "Run" chromium on your windows phone
 
 **Currently a proof of concept** inspired by [browservice](https://github.com/ttalvitie/browservice).
@@ -7,7 +7,11 @@ This was hacked together in a few days, much of it is hardcoded & the code is pr
 
 When it grows up it aims to be a usable modern browser for windows mobile devices that anyone can install on a PC (server) and have an up to date web browser on WP (client).
 
-<img src="https://user-images.githubusercontent.com/1968543/235461724-d328459b-881c-4540-a086-4824e0c3aa1f.JPEG" height="500"><img src="https://user-images.githubusercontent.com/1968543/235461704-9f9ded26-ac71-4f79-9641-31fd9460d9ea.jpg" height="500">
+<div style="display: flex; gap: 10px; align-items: flex-start;">
+<img src="https://private-user-images.githubusercontent.com/39994282/636598230-683b6d73-cc55-471a-aa7c-42a4b642d365.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODY4NDc0MjgsIm5iZiI6MTc4Njg0NzEyOCwicGF0aCI6Ii8zOTk5NDI4Mi82MzY1OTgyMzAtNjgzYjZkNzMtY2M1NS00NzFhLWFhN2MtNDJhNGI2NDJkMzY1LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA4MTYlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwODE2VDAyMjUyOFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTJmYWRiNDhhZGQ3NWZlZjE0YjUwMWEzYjljYTUyNzIwODQwYTBjYzE5NDUwNjAxMGI1ZDY1NjUxNjY3ZWY0NzEmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnBuZyJ9.O-g3s20YtBIgiGf5I_Jg7UiXdiuuioBdfFcUIrvX6eM" height="500">
+<img src="https://private-user-images.githubusercontent.com/39994282/636598293-e632b558-1600-43a8-bff9-a0aadd6d821d.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODY4NDgwMDAsIm5iZiI6MTc4Njg0NzcwMCwicGF0aCI6Ii8zOTk5NDI4Mi82MzY1OTgyOTMtZTYzMmI1NTgtMTYwMC00M2E4LWJmZjktYTBhYWRkNmQ4MjFkLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA4MTYlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwODE2VDAyMzUwMFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTZmYzliMTJjNmZiNzEwZjdiZDk3ZTNiNWFhYzlhYWM3MTJjZjA3NjQ5OTg3ZTg2ZTU2N2VhZjcwYTM4MGU3MjEmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnBuZyJ9.mIpENm3WIqsCxJ4DYYHejwZ1eFZHWCdY4p44ZTVMI1M" height="500">
+  <img src="https://private-user-images.githubusercontent.com/39994282/636598257-41e0f3cc-59ca-4a6e-83b3-87051da86298.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3ODY4NDc3NTMsIm5iZiI6MTc4Njg0NzQ1MywicGF0aCI6Ii8zOTk5NDI4Mi82MzY1OTgyNTctNDFlMGYzY2MtNTljYS00YTZlLTgzYjMtODcwNTFkYTg2Mjk4LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNjA4MTYlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjYwODE2VDAyMzA1M1omWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWI4M2VlODhlMGI5YjE1ODJhN2JkZmY5MDIxOGQyMTY1NzkxZDk3YmU1MTRjMTQ5MzQzYWE4NDRlNWRjZWQ3Y2QmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnJlc3BvbnNlLWNvbnRlbnQtdHlwZT1pbWFnZSUyRnBuZyJ9.-ZyzfoOn-cc_Lpj5xhzdOESEqeCpCEZC2-7kA5645qk" height="500">
+</div>
 
 ### How to try
 For now your phone and your server needs to be on the same network
@@ -25,35 +29,25 @@ For now your phone and your server needs to be on the same network
 - [x] Navigation events from UWP client
 - [x] Touch input events (multitouch) from UWP client
 - [x] Add to Home (pin current page to Start)
-
-### What's needed
 - [X] Auto finding the server if on local connection (UDP discovery packets)
 - [X] Easy&secure remote connections via tunnels (Ngrok, ZeroTier, serveo)
 - [X] Auto scaling renderview based on screen resolution/rotation/UWP viewport
-- [ ] HiDPI
 - [X] Multitouch
-- [X] Text input (basic, still WIP)
+- [X] Text input
 - [x] Auto save the last server address
+- [x] Audio playback forwarding
+- [X] Tabs
+- [X] Back/Forward
+
+### What's needed
+- [ ] HiDPI
 - [ ] Faster rendering (GPU?)
 - [ ] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
 - [ ] Configurable streaming quality (ondemand rendering?)
-- [ ] Audio playback forwarding
 - [ ] File uploads
 - [ ] File downloads
 - [ ] Camera & microphone
 - [ ] Notifications
-
-### What's needed after
-- [X] Tabs
 - [ ] In Private/Incognito
-- [ ] Back/Forward
 - [ ] General browser stuff
 - [ ] Continuum support/verify
-
-
-### How can you help
-* XAML! I don't like XAML. If you are a seasoned UWP/XAML/Windows Phone developer feel free to suggest changes.
-* UWP peformance & memory management. Yes, C# has GC so one might as well use it but still. If you have any cool tips on how can I make the UWP app faster besides getting down the memory allocations let me know.
-* We need a real name for the project
-* Report issues you encounter on the GitHub page
-* I don't do much user-facing stuff, If you find this useful and have the time make guides/tutorials for the less tech-savy :) 
