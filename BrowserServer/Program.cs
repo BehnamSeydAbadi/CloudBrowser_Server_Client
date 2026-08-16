@@ -187,7 +187,10 @@ namespace BrowserServer
                         break;
 
                     case PacketType.NavigateBack:
-                        if (browser.CanGoBack) browser.Back();
+                        {
+                            var stopBeforeBlank = string.Equals(packet.JSONData, "stopBeforeBlank", StringComparison.Ordinal);
+                            var ignored = HandleNavigateBackAsync(browser, stopBeforeBlank);
+                        }
                         break;
                     case PacketType.NavigateForward:
                         if (browser.CanGoForward) browser.Forward();
@@ -402,6 +405,96 @@ namespace BrowserServer
                 bufferBytes = stream.ToArray();
             }
             server.WebSocketServices.Broadcast(bufferBytes);
+        }
+
+        private static async System.Threading.Tasks.Task HandleNavigateBackAsync(ChromiumWebBrowser browser, bool stopBeforeBlank)
+        {
+            if (browser == null)
+                return;
+
+            try
+            {
+                if (!browser.CanGoBack)
+                {
+                    if (stopBeforeBlank)
+                        BroadcastAtHistoryRoot();
+                    return;
+                }
+
+                if (stopBeforeBlank)
+                {
+                    var host = browser.GetBrowser()?.GetHost();
+                    if (host == null)
+                    {
+                        BroadcastAtHistoryRoot();
+                        return;
+                    }
+
+                    var entries = await CefSharp.AsyncExtensions.GetNavigationEntriesAsync(host, currentOnly: false);
+                    if (entries == null || entries.Count == 0)
+                    {
+                        BroadcastAtHistoryRoot();
+                        return;
+                    }
+
+                    var currentIndex = -1;
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        if (entries[i] != null && entries[i].IsCurrent)
+                        {
+                            currentIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (currentIndex <= 0)
+                    {
+                        BroadcastAtHistoryRoot();
+                        return;
+                    }
+
+                    var previous = entries[currentIndex - 1];
+                    if (IsBlankNavigationUrl(previous?.Url) || IsBlankNavigationUrl(previous?.DisplayUrl))
+                    {
+                        BroadcastAtHistoryRoot();
+                        return;
+                    }
+                }
+
+                if (browser.CanGoBack)
+                    browser.Back();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("NavigateBack error: " + ex.Message);
+                if (stopBeforeBlank)
+                    BroadcastAtHistoryRoot();
+            }
+        }
+
+        private static bool IsBlankNavigationUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return true;
+
+            url = url.Trim();
+            return url.Equals("about:blank", StringComparison.OrdinalIgnoreCase)
+                || url.Equals("about:blank#blocked", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void BroadcastAtHistoryRoot()
+        {
+            try
+            {
+                server?.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
+                {
+                    PType = TextPacketType.AtHistoryRoot,
+                    text = ""
+                }));
+            }
+            catch
+            {
+            }
         }
 
         private static ImageCodecInfo GetEncoder(ImageFormat format)

@@ -146,11 +146,15 @@ namespace BrowserClient
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
             await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
         }
-        public async void NavigateBack()
+        public async void NavigateBack(bool stopBeforeBlank = false)
         {
+            if (sock == null || sock.State != WebSocketState.Open)
+                return;
+
             var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
             {
-                PType = PacketType.NavigateBack
+                PType = PacketType.NavigateBack,
+                JSONData = stopBeforeBlank ? "stopBeforeBlank" : null
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);

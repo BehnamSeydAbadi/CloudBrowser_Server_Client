@@ -160,11 +160,23 @@ namespace BrowserClient
             // Connected browsing session: navigate remote CEF history instead of leaving the app.
             if (ds != null && ConnectPage.Visibility != Visibility.Visible)
             {
-                ds.NavigateBack();
+                // Pinned/home-screen mode: never step back onto about:blank — exit instead.
+                ds.NavigateBack(stopBeforeBlank: immersivePinnedMode);
                 return true;
             }
 
             return false;
+        }
+
+        private void ExitPinnedSession()
+        {
+            try
+            {
+                Application.Current.Exit();
+            }
+            catch
+            {
+            }
         }
 
         /// <summary>
@@ -398,6 +410,12 @@ namespace BrowserClient
                         case TextPacketType.TabList:
                             ApplyTabList(o.text);
                             TryNavigatePendingUrl();
+                            break;
+
+                        case TextPacketType.AtHistoryRoot:
+                            // Only pinned sessions treat history-root as "leave the app".
+                            if (immersivePinnedMode)
+                                ExitPinnedSession();
                             break;
                     }
                 });
@@ -919,12 +937,12 @@ namespace BrowserClient
 
         private void NavigateBack_Click(object sender, RoutedEventArgs e)
         {
-            ds.NavigateBack();
+            ds?.NavigateBack(stopBeforeBlank: immersivePinnedMode);
         }
 
         private void NavigateForward_Click(object sender, RoutedEventArgs e)
         {
-            ds.NavigateForward();
+            ds?.NavigateForward();
         }
     }
 }

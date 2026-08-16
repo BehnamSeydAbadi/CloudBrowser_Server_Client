@@ -32,7 +32,9 @@ namespace BrowserServer
         TextInputSend,
         TextInputCancel,
         TabList,
-        AudioStop
+        AudioStop,
+        /// <summary>NavigateBack was blocked because the previous entry is about:blank / history root.</summary>
+        AtHistoryRoot
     }
 
     public enum PacketType
