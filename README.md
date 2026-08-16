@@ -1,4 +1,4 @@
-# Windows-Mobile-Browser-Streaming
+# Windows-Mobile-Cloud-Browser
 "Run" chromium on your windows phone
 
 **Currently a proof of concept** inspired by [browservice](https://github.com/ttalvitie/browservice).
@@ -32,12 +32,12 @@ For now your phone and your server needs to be on the same network
 - [X] Auto scaling renderview based on screen resolution/rotation/UWP viewport
 - [ ] HiDPI
 - [X] Multitouch
-- [X] Text input (basic, still WIP)
+- [X] Text input
 - [x] Auto save the last server address
 - [ ] Faster rendering (GPU?)
 - [ ] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
 - [ ] Configurable streaming quality (ondemand rendering?)
-- [ ] Audio playback forwarding
+- [x] Audio playback forwarding
 - [ ] File uploads
 - [ ] File downloads
 - [ ] Camera & microphone
@@ -46,14 +46,6 @@ For now your phone and your server needs to be on the same network
 ### What's needed after
 - [X] Tabs
 - [ ] In Private/Incognito
-- [ ] Back/Forward
+- [X] Back/Forward
 - [ ] General browser stuff
 - [ ] Continuum support/verify
-
-
-### How can you help
-* XAML! I don't like XAML. If you are a seasoned UWP/XAML/Windows Phone developer feel free to suggest changes.
-* UWP peformance & memory management. Yes, C# has GC so one might as well use it but still. If you have any cool tips on how can I make the UWP app faster besides getting down the memory allocations let me know.
-* We need a real name for the project
-* Report issues you encounter on the GitHub page
-* I don't do much user-facing stuff, If you find this useful and have the time make guides/tutorials for the less tech-savy :) 
