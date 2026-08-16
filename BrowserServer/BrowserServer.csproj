@@ -107,7 +107,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BrowserHandlers.cs" />
+    <Compile Include="MediaBridge.cs" />
+    <Compile Include="MediaSchemeHandler.cs" />
     <Compile Include="StreamingAudioHandler.cs" />
+    <Compile Include="StreamingDownloadHandler.cs" />
     <Compile Include="JavascriptFunctions.cs" />
     <Compile Include="KeyFinder.cs" />
     <Compile Include="MobileChromeIdentity.cs" />

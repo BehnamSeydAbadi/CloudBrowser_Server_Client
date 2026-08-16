@@ -46,7 +46,7 @@ For now your phone and your server needs to be on the same network
 - [ ] Configurable streaming quality (ondemand rendering?)
 - [ ] File uploads
 - [ ] File downloads
-- [ ] Camera & microphone
+- [x] Camera & microphone (basic getUserMedia via phone)
 - [ ] Notifications
 - [ ] In Private/Incognito
 - [ ] General browser stuff

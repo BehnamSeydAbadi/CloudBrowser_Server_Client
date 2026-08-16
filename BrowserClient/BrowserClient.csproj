@@ -137,6 +137,8 @@
     </Compile>
     <Compile Include="Packets.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="ClientMediaCapture.cs" />
+    <Compile Include="DownloadStore.cs" />
     <Compile Include="StreamAudioPlayer.cs" />
     <Compile Include="WebBrowserDataSource.cs" />
   </ItemGroup>

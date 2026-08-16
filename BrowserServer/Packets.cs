@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace BrowserServer
 {
@@ -34,7 +31,14 @@ namespace BrowserServer
         TabList,
         AudioStop,
         /// <summary>NavigateBack was blocked because the previous entry is about:blank / history root.</summary>
-        AtHistoryRoot
+        AtHistoryRoot,
+        DownloadStarted,
+        DownloadProgress,
+        DownloadCompleted,
+        /// <summary>Site wants camera/mic — JSON MediaPermissionPayload.</summary>
+        MediaPermissionRequest,
+        /// <summary>Page released media tracks — stop phone capture.</summary>
+        MediaCaptureStop
     }
 
     public enum PacketType
@@ -52,7 +56,20 @@ namespace BrowserServer
         SendKey,
         CreateTab,
         CloseTab,
-        SwitchTab
+        SwitchTab,
+        /// <summary>Client ACK for a received FILE chunk (JSON: id, seq).</summary>
+        DownloadAck,
+        /// <summary>Phone Allow/Deny for MediaPermissionRequest.</summary>
+        MediaPermissionResponse
+    }
+
+    public class MediaPermissionPayload
+    {
+        public string requestId;
+        public string origin;
+        public bool audio;
+        public bool video;
+        public bool allowed;
     }
 
     public class TabInfo
@@ -67,6 +84,25 @@ namespace BrowserServer
         public string activeId;
         public List<TabInfo> tabs;
     }
+
+    public class DownloadEventPayload
+    {
+        public string id;
+        public string fileName;
+        public long totalBytes;
+        public long receivedBytes;
+        public int percent;
+        public string mimeType;
+        public bool success;
+        public string error;
+    }
+
+    public class DownloadAckPayload
+    {
+        public string id;
+        public int seq;
+    }
+
     public struct DiscoveryPacket
     {
         public DiscoveryPacketType PType;

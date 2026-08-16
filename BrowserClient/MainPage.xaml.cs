@@ -38,6 +38,10 @@ namespace BrowserClient
         private bool immersivePinnedMode;
         private string lastTabListJson;
         private UISettings themeSettings;
+        private readonly DownloadStore offlineDownloads = new DownloadStore();
+        private readonly HashSet<string> downloadStartToasts = new HashSet<string>();
+        private readonly HashSet<string> downloadCompleteToasts = new HashSet<string>();
+        private int downloadToastGeneration;
 
         public string broadcastAddress = "255.255.255.255";
         Timer UdpDiscoveryTimer;
@@ -127,6 +131,12 @@ namespace BrowserClient
             if (TabsOverlay.Visibility == Visibility.Visible)
             {
                 TabsOverlay.Visibility = Visibility.Collapsed;
+                return true;
+            }
+
+            if (DownloadsOverlay.Visibility == Visibility.Visible)
+            {
+                DownloadsOverlay.Visibility = Visibility.Collapsed;
                 return true;
             }
 
@@ -228,7 +238,10 @@ namespace BrowserClient
         {
             ChromeGrid.Visibility = immersivePinnedMode ? Visibility.Collapsed : Visibility.Visible;
             if (immersivePinnedMode)
+            {
                 TabsOverlay.Visibility = Visibility.Collapsed;
+                DownloadsOverlay.Visibility = Visibility.Collapsed;
+            }
         }
 
         private void NotifyDisplaySize()
@@ -370,12 +383,25 @@ namespace BrowserClient
 
         public void Connect(string endpoint)
         {
+            if (ds != null)
+            {
+                try { ds.Downloads.ListChanged -= Downloads_ListChanged; } catch { }
+            }
+
             ds = new WebBrowserDataSource();
+            ds.Downloads.ListChanged += Downloads_ListChanged;
             ds.FrameRecived += (s, o) =>
             {
                 test.Source = o;
             };
             ds.StartRecive(endpoint);
+            ds.MediaPermissionRequested += (s, payload) =>
+            {
+                var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                {
+                    var dialogIgnored = ShowMediaPermissionDialogAsync(payload);
+                });
+            };
             ds.TextPacketRecived += (s, o) =>
             {
                 var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
@@ -417,9 +443,160 @@ namespace BrowserClient
                             if (immersivePinnedMode)
                                 ExitPinnedSession();
                             break;
+
+                        case TextPacketType.DownloadStarted:
+                        case TextPacketType.DownloadProgress:
+                        case TextPacketType.DownloadCompleted:
+                            // DownloadStore already updated inside WebBrowserDataSource;
+                            // ListChanged drives toasts + list refresh.
+                            break;
                     }
                 });
             };
+        }
+
+        private void Downloads_ListChanged(object sender, EventArgs e)
+        {
+            var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+            {
+                NotifyDownloadToasts();
+                RefreshDownloadsUi();
+            });
+        }
+
+        private void NotifyDownloadToasts()
+        {
+            var list = ActiveDownloads.GetSnapshot();
+            foreach (var item in list)
+            {
+                if (item == null || string.IsNullOrEmpty(item.id))
+                    continue;
+
+                if ((item.status == "downloading" || item.status == "transferring")
+                    && downloadStartToasts.Add(item.id))
+                {
+                    ShowDownloadToast("Downloading...");
+                }
+                else if (item.status == "completed" && downloadCompleteToasts.Add(item.id))
+                {
+                    ShowDownloadToast("Download Complete");
+                }
+            }
+        }
+
+        private async void ShowDownloadToast(string message)
+        {
+            if (DownloadToast == null || DownloadToastMessage == null)
+                return;
+
+            var generation = ++downloadToastGeneration;
+            DownloadToastMessage.Text = message;
+            DownloadToast.Visibility = Visibility.Visible;
+            DownloadToast.Opacity = 0;
+
+            try
+            {
+                await AnimateOpacityAsync(DownloadToast, 0, 1, 220);
+                await Task.Delay(2000);
+                if (generation != downloadToastGeneration)
+                    return;
+
+                await AnimateOpacityAsync(DownloadToast, 1, 0, 320);
+                if (generation == downloadToastGeneration)
+                {
+                    DownloadToast.Visibility = Visibility.Collapsed;
+                    DownloadToast.Opacity = 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Download toast failed: " + ex.Message);
+                if (generation == downloadToastGeneration)
+                {
+                    DownloadToast.Visibility = Visibility.Collapsed;
+                    DownloadToast.Opacity = 0;
+                }
+            }
+        }
+
+        private static Task AnimateOpacityAsync(UIElement element, double from, double to, int durationMs)
+        {
+            var tcs = new TaskCompletionSource<bool>();
+            var animation = new Windows.UI.Xaml.Media.Animation.DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = TimeSpan.FromMilliseconds(durationMs),
+                EnableDependentAnimation = true,
+                EasingFunction = new Windows.UI.Xaml.Media.Animation.QuadraticEase
+                {
+                    EasingMode = Windows.UI.Xaml.Media.Animation.EasingMode.EaseInOut
+                }
+            };
+
+            Windows.UI.Xaml.Media.Animation.Storyboard.SetTarget(animation, element);
+            Windows.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(animation, "Opacity");
+
+            var storyboard = new Windows.UI.Xaml.Media.Animation.Storyboard();
+            storyboard.Children.Add(animation);
+            EventHandler<object> handler = null;
+            handler = (s, e) =>
+            {
+                storyboard.Completed -= handler;
+                tcs.TrySetResult(true);
+            };
+            storyboard.Completed += handler;
+            element.Opacity = from;
+            storyboard.Begin();
+            return tcs.Task;
+        }
+
+        private async void DownloadToastDetails_Click(object sender, RoutedEventArgs e)
+        {
+            downloadToastGeneration++;
+            DownloadToast.Visibility = Visibility.Collapsed;
+            DownloadToast.Opacity = 0;
+
+            await ActiveDownloads.EnsureLoadedAsync();
+            TabsOverlay.Visibility = Visibility.Collapsed;
+            DownloadsOverlay.Visibility = Visibility.Visible;
+            RefreshDownloadsUi();
+        }
+
+        private async Task ShowMediaPermissionDialogAsync(MediaPermissionPayload payload)
+        {
+            if (payload == null || ds == null)
+                return;
+
+            var parts = new System.Collections.Generic.List<string>();
+            if (payload.video) parts.Add("camera");
+            if (payload.audio) parts.Add("microphone");
+            var what = parts.Count > 0 ? string.Join(" and ", parts) : "media";
+            var origin = string.IsNullOrWhiteSpace(payload.origin) ? "This site" : payload.origin;
+
+            var dialog = new ContentDialog
+            {
+                Title = "Allow media access?",
+                Content = origin + " wants to use your " + what + ".",
+                PrimaryButtonText = "Allow",
+                SecondaryButtonText = "Deny"
+            };
+
+            var allowed = false;
+            try
+            {
+                var result = await dialog.ShowAsync();
+                allowed = result == ContentDialogResult.Primary;
+            }
+            catch
+            {
+                allowed = false;
+            }
+
+            if (allowed && ds != null)
+                ds.MediaCapture.PreviewElement = MediaPreviewSink;
+
+            await ds.RespondMediaPermissionAsync(payload, allowed);
         }
 
         private async void About_Click(object sender, RoutedEventArgs e)
@@ -719,6 +896,196 @@ namespace BrowserClient
 
             activePointers.Clear();
             ds.CloseTab(tabId);
+        }
+
+        private DownloadStore ActiveDownloads => ds != null ? ds.Downloads : offlineDownloads;
+
+        private async void DownloadsMenu_Click(object sender, RoutedEventArgs e)
+        {
+            MoreButton.Flyout?.Hide();
+            await ActiveDownloads.EnsureLoadedAsync();
+            TabsOverlay.Visibility = Visibility.Collapsed;
+            DownloadsOverlay.Visibility = Visibility.Visible;
+            RefreshDownloadsUi();
+        }
+
+        private void CloseDownloadsButton_Click(object sender, RoutedEventArgs e)
+        {
+            DownloadsOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void RefreshDownloadsUi()
+        {
+            if (DownloadStripPanel == null)
+                return;
+
+            DownloadStripPanel.Children.Clear();
+            var list = ActiveDownloads.GetSnapshot();
+            DownloadsEmptyText.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            var titleBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabTitleBrush"];
+            var mutedBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabSubtitleBrush"];
+            var pillBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabInactiveBrush"];
+            var accentBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["ConnectAccentBrush"];
+
+            foreach (var item in list)
+            {
+                var showProgress = item.status == "downloading" || item.status == "transferring";
+                var percent = Math.Max(0, Math.Min(100, item.percent));
+                if (item.status == "transferring" && percent < 1)
+                    percent = 100;
+
+                var row = new Grid
+                {
+                    Margin = new Thickness(0, 0, 0, 8),
+                    MinHeight = 56,
+                    Background = pillBrush,
+                    Tag = item.id
+                };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var texts = new StackPanel
+                {
+                    Margin = new Thickness(14, 10, 8, 10),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                texts.Children.Add(new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(item.fileName) ? "download" : item.fileName,
+                    FontSize = 15,
+                    FontWeight = Windows.UI.Text.FontWeights.SemiBold,
+                    Foreground = titleBrush,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                texts.Children.Add(new TextBlock
+                {
+                    Text = FormatDownloadSubtitle(item),
+                    FontSize = 12,
+                    Foreground = mutedBrush,
+                    Margin = new Thickness(0, 2, 0, 0),
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+
+                if (showProgress || item.status == "completed")
+                {
+                    var bar = new ProgressBar
+                    {
+                        Minimum = 0,
+                        Maximum = 100,
+                        Value = item.status == "completed" ? 100 : percent,
+                        Height = 6,
+                        Margin = new Thickness(0, 8, 0, 0),
+                        Foreground = accentBrush,
+                        Background = mutedBrush,
+                        IsIndeterminate = false
+                    };
+                    texts.Children.Add(bar);
+
+                    texts.Children.Add(new TextBlock
+                    {
+                        Text = (item.status == "completed" ? 100 : percent) + "%",
+                        FontSize = 11,
+                        Foreground = mutedBrush,
+                        Margin = new Thickness(0, 4, 0, 0)
+                    });
+                }
+
+                Grid.SetColumn(texts, 0);
+                row.Children.Add(texts);
+
+                var delete = new Button
+                {
+                    Tag = item.id,
+                    Width = 44,
+                    Height = 44,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    Background = new Windows.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Content = new FontIcon
+                    {
+                        FontFamily = new Windows.UI.Xaml.Media.FontFamily("Segoe MDL2 Assets"),
+                        Glyph = "\uE74D",
+                        FontSize = 16,
+                        Foreground = titleBrush
+                    }
+                };
+                delete.Click += DeleteDownload_Click;
+                Grid.SetColumn(delete, 1);
+                row.Children.Add(delete);
+
+                row.Tapped += DownloadRow_Tapped;
+                DownloadStripPanel.Children.Add(row);
+            }
+        }
+
+        private static string FormatDownloadSubtitle(DownloadInfo item)
+        {
+            if (item == null)
+                return "";
+
+            var sizeText = FormatByteSize(item.size);
+            switch (item.status)
+            {
+                case "downloading":
+                    return string.Format("Downloading {0}% · {1}", item.percent, sizeText);
+                case "transferring":
+                    return string.Format("Saving to phone… {0}% · {1}", Math.Max(item.percent, 1), sizeText);
+                case "failed":
+                    return string.IsNullOrWhiteSpace(item.error) ? "Failed" : ("Failed · " + item.error);
+                case "completed":
+                default:
+                    return sizeText;
+            }
+        }
+
+        private static string FormatByteSize(long bytes)
+        {
+            if (bytes < 0) bytes = 0;
+            if (bytes < 1024) return bytes + " B";
+            double kb = bytes / 1024.0;
+            if (kb < 1024) return kb.ToString("0.#") + " KB";
+            double mb = kb / 1024.0;
+            if (mb < 1024) return mb.ToString("0.#") + " MB";
+            return (mb / 1024.0).ToString("0.##") + " GB";
+        }
+
+        private async void DownloadRow_Tapped(object sender, Windows.UI.Xaml.Input.TappedRoutedEventArgs e)
+        {
+            var element = sender as FrameworkElement;
+            var id = element?.Tag as string;
+            if (string.IsNullOrEmpty(id))
+                return;
+
+            if (e.OriginalSource is Windows.UI.Xaml.Controls.Primitives.ButtonBase
+                || ((e.OriginalSource as FrameworkElement)?.Parent is Button))
+                return;
+
+            e.Handled = true;
+            var file = await ActiveDownloads.TryGetFileAsync(id);
+            if (file == null)
+                return;
+
+            try
+            {
+                await Windows.System.Launcher.LaunchFileAsync(file);
+            }
+            catch
+            {
+            }
+        }
+
+        private async void DeleteDownload_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as FrameworkElement;
+            var id = button?.Tag as string;
+            if (string.IsNullOrEmpty(id))
+                return;
+
+            await ActiveDownloads.DeleteAsync(id);
         }
 
         private void BeginPageTyping()

@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Net.WebSockets;
-using System.Threading;
 using Newtonsoft.Json;
 using System.Runtime.InteropServices;
 using Windows.UI.Input;
@@ -22,6 +22,12 @@ namespace BrowserClient
         public event EventHandler<TextPacket> TextPacketRecived;
         public event EventHandler<ArraySegment<byte>> AudioPacketRecived;
         private readonly StreamAudioPlayer audioPlayer = new StreamAudioPlayer();
+        public readonly DownloadStore Downloads = new DownloadStore();
+        public readonly ClientMediaCapture MediaCapture = new ClientMediaCapture();
+        private readonly SemaphoreSlim sendGate = new SemaphoreSlim(1, 1);
+
+        /// <summary>Raised on UI thread expectation — MainPage shows Allow/Deny.</summary>
+        public event EventHandler<MediaPermissionPayload> MediaPermissionRequested;
 
         public async void StartRecive(string addr)
         {
@@ -31,95 +37,279 @@ namespace BrowserClient
             localSettings.Values["LastServerUrl"] = addr ;
 
             sock = new ClientWebSocket();
-
-            await sock.ConnectAsync(new Uri(addr), CancellationToken.None);
-
-            //2mb should be enough
-            ArraySegment<byte> readbuffer = new ArraySegment<byte>(new byte[2000000]);
-            
-            while (sock.State == WebSocketState.Open)
+            Downloads.OnChunkWritten = (id, seq) =>
             {
-                Array.Clear(readbuffer.Array, 0, readbuffer.Array.Length);
+                var ignored = SendDownloadAckAsync(id, seq);
+            };
+            MediaCapture.SendBinaryAsync = SendBinaryAsync;
 
-                var res = await sock.ReceiveAsync(readbuffer, CancellationToken.None);
-                var messageType = res.MessageType;
-                // Reassemble continuation frames if any.
-                int total = res.Count;
-                while (!res.EndOfMessage && sock.State == WebSocketState.Open)
-                {
-                    if (total >= readbuffer.Array.Length)
-                        break;
-                    res = await sock.ReceiveAsync(new ArraySegment<byte>(readbuffer.Array, total, readbuffer.Array.Length - total), CancellationToken.None);
-                    total += res.Count;
-                }
+            try
+            {
+                await sock.ConnectAsync(new Uri(addr), CancellationToken.None);
+                await Downloads.EnsureLoadedAsync();
 
-                // AUDI magic is always binary — protects against wrong MessageType after fragmentation.
-                if (total >= 4 &&
-                    readbuffer.Array[0] == (byte)'A' &&
-                    readbuffer.Array[1] == (byte)'U' &&
-                    readbuffer.Array[2] == (byte)'D' &&
-                    readbuffer.Array[3] == (byte)'I')
-                {
-                    messageType = WebSocketMessageType.Binary;
-                }
+                // Typical messages are << 1MB; grow on demand for rare large frames.
+                var readbuffer = new byte[512 * 1024];
 
-                switch (messageType)
+                while (sock.State == WebSocketState.Open)
                 {
-                    case WebSocketMessageType.Binary:
-                        if (total >= 4 &&
-                            readbuffer.Array[0] == (byte)'A' &&
-                            readbuffer.Array[1] == (byte)'U' &&
-                            readbuffer.Array[2] == (byte)'D' &&
-                            readbuffer.Array[3] == (byte)'I')
+                    var res = await sock.ReceiveAsync(new ArraySegment<byte>(readbuffer), CancellationToken.None);
+                    var messageType = res.MessageType;
+                    int total = res.Count;
+
+                    while (!res.EndOfMessage && sock.State == WebSocketState.Open)
+                    {
+                        if (total >= readbuffer.Length)
                         {
-                            // Must copy — the receive buffer is cleared/reused on the next loop iteration.
-                            var audio = new byte[total];
-                            System.Buffer.BlockCopy(readbuffer.Array, 0, audio, 0, total);
-                            audioPlayer.SubmitPacket(audio, total);
-                            AudioPacketRecived?.Invoke(this, new ArraySegment<byte>(audio, 0, total));
+                            var grown = new byte[readbuffer.Length * 2];
+                            System.Buffer.BlockCopy(readbuffer, 0, grown, 0, total);
+                            readbuffer = grown;
                         }
-                        else
-                        {
-                            var jpeg = new byte[total];
-                            System.Buffer.BlockCopy(readbuffer.Array, 0, jpeg, 0, total);
-                            // BitmapImage must be created on the UI sync context (WM10/UWP).
-                            // Stay on the context captured by StartRecive — do not ConfigureAwait(false).
+
+                        res = await sock.ReceiveAsync(
+                            new ArraySegment<byte>(readbuffer, total, readbuffer.Length - total),
+                            CancellationToken.None);
+                        total += res.Count;
+                    }
+
+                    if (sock.State != WebSocketState.Open && messageType == WebSocketMessageType.Close)
+                        break;
+
+                    // Magic prefixes are always binary — protects against wrong MessageType after fragmentation.
+                    if (total >= 4 &&
+                        ((readbuffer[0] == (byte)'A' && readbuffer[1] == (byte)'U' && readbuffer[2] == (byte)'D' && readbuffer[3] == (byte)'I')
+                         || (readbuffer[0] == (byte)'F' && readbuffer[1] == (byte)'I' && readbuffer[2] == (byte)'L' && readbuffer[3] == (byte)'E')))
+                    {
+                        messageType = WebSocketMessageType.Binary;
+                    }
+
+                    switch (messageType)
+                    {
+                        case WebSocketMessageType.Binary:
+                            if (total >= 4 &&
+                                readbuffer[0] == (byte)'A' &&
+                                readbuffer[1] == (byte)'U' &&
+                                readbuffer[2] == (byte)'D' &&
+                                readbuffer[3] == (byte)'I')
+                            {
+                                var audio = new byte[total];
+                                System.Buffer.BlockCopy(readbuffer, 0, audio, 0, total);
+                                audioPlayer.SubmitPacket(audio, total);
+                                AudioPacketRecived?.Invoke(this, new ArraySegment<byte>(audio, 0, total));
+                            }
+                            else if (total >= 4 &&
+                                readbuffer[0] == (byte)'F' &&
+                                readbuffer[1] == (byte)'I' &&
+                                readbuffer[2] == (byte)'L' &&
+                                readbuffer[3] == (byte)'E')
+                            {
+                                // Copy + queue — never await disk I/O on the receive loop (aborts WS under load).
+                                var filePacket = new byte[total];
+                                System.Buffer.BlockCopy(readbuffer, 0, filePacket, 0, total);
+                                Downloads.EnqueueFilePacket(filePacket);
+                            }
+                            else
+                            {
+                                var jpeg = new byte[total];
+                                System.Buffer.BlockCopy(readbuffer, 0, jpeg, 0, total);
+                                try
+                                {
+                                    var bitmap = await ConvertToBitmapImage(jpeg);
+                                    FrameRecived?.Invoke(this, bitmap);
+                                }
+                                catch
+                                {
+                                }
+                            }
+                            break;
+                        case WebSocketMessageType.Close:
+                            break;
+                        case WebSocketMessageType.Text:
                             try
                             {
-                                var bitmap = await ConvertToBitmapImage(jpeg);
-                                FrameRecived?.Invoke(this, bitmap);
+                                var json = System.Text.Encoding.UTF8.GetString(readbuffer, 0, total);
+                                var packet = JsonConvert.DeserializeObject<TextPacket>(json);
+                                if (packet.PType == TextPacketType.AudioStop)
+                                    audioPlayer.Stop();
+                                HandleDownloadTextPacket(packet);
+                                HandleMediaTextPacket(packet);
+                                TextPacketRecived?.Invoke(this, packet);
                             }
                             catch
                             {
                             }
-                        }
-                        break;
-                    case WebSocketMessageType.Close:
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            catch (WebSocketException)
+            {
+                // Common when the peer resets during a heavy transfer; connection will be recreated on next Connect().
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception)
+            {
+            }
+            finally
+            {
+                audioPlayer.Stop();
+                try { MediaCapture.Dispose(); } catch { }
+                try
+                {
+                    if (sock != null &&
+                        (sock.State == WebSocketState.Open || sock.State == WebSocketState.CloseReceived))
+                    {
+                        await sock.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
 
-                        break;
-                    case WebSocketMessageType.Text:
-                        //text packet
-                        try
-                        {
-                            var json = System.Text.Encoding.UTF8.GetString(readbuffer.Array, 0, total);
-                            var packet = JsonConvert.DeserializeObject<TextPacket>(json);
-                            if (packet.PType == TextPacketType.AudioStop)
-                                audioPlayer.Stop();
-                            TextPacketRecived?.Invoke(this, packet);
-                        }
-                        catch (Exception)
-                        {
+        private void HandleMediaTextPacket(TextPacket packet)
+        {
+            if (packet.text == null)
+                return;
 
-                           // throw;
-                        }
-                       
+            try
+            {
+                if (packet.PType == TextPacketType.MediaPermissionRequest)
+                {
+                    var payload = JsonConvert.DeserializeObject<MediaPermissionPayload>(packet.text);
+                    if (payload != null)
+                        MediaPermissionRequested?.Invoke(this, payload);
+                }
+                else if (packet.PType == TextPacketType.MediaCaptureStop)
+                {
+                    var payload = JsonConvert.DeserializeObject<MediaPermissionPayload>(packet.text);
+                    MediaCapture.StopIfRequest(payload?.requestId);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public async Task RespondMediaPermissionAsync(MediaPermissionPayload request, bool allowed)
+        {
+            if (request == null || string.IsNullOrEmpty(request.requestId))
+                return;
+
+            var started = false;
+            if (allowed)
+            {
+                started = await MediaCapture.StartAsync(request.requestId, request.audio, request.video);
+                if (!started)
+                    allowed = false;
+            }
+
+            try
+            {
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.MediaPermissionResponse,
+                    JSONData = JsonConvert.SerializeObject(new MediaPermissionPayload
+                    {
+                        requestId = request.requestId,
+                        allowed = allowed,
+                        audio = request.audio,
+                        video = request.video,
+                        origin = request.origin
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
+            }
+
+            if (!allowed)
+                await MediaCapture.StopAsync();
+        }
+
+        private void HandleDownloadTextPacket(TextPacket packet)
+        {
+            if (packet.text == null)
+                return;
+
+            try
+            {
+                switch (packet.PType)
+                {
+                    case TextPacketType.DownloadStarted:
+                        Downloads.OnStarted(JsonConvert.DeserializeObject<DownloadEventPayload>(packet.text));
                         break;
-                    default:
+                    case TextPacketType.DownloadProgress:
+                        Downloads.OnProgress(JsonConvert.DeserializeObject<DownloadEventPayload>(packet.text));
+                        break;
+                    case TextPacketType.DownloadCompleted:
+                        Downloads.OnCompletedMeta(JsonConvert.DeserializeObject<DownloadEventPayload>(packet.text));
                         break;
                 }
             }
+            catch
+            {
+            }
+        }
 
-            audioPlayer.Stop();
+        private async Task SendDownloadAckAsync(string id, int seq)
+        {
+            if (string.IsNullOrEmpty(id))
+                return;
+
+            try
+            {
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.DownloadAck,
+                    JSONData = JsonConvert.SerializeObject(new DownloadAckPayload { id = id, seq = seq })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>All sends go through here — ClientWebSocket forbids concurrent SendAsync.</summary>
+        private async Task SendTextAsync(ArraySegment<byte> payload)
+        {
+            await sendGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (sock == null || sock.State != WebSocketState.Open)
+                    return;
+                await sock.SendAsync(payload, WebSocketMessageType.Text, true, CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                sendGate.Release();
+            }
+        }
+
+        private async Task SendBinaryAsync(byte[] payload)
+        {
+            if (payload == null || payload.Length == 0)
+                return;
+
+            await sendGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (sock == null || sock.State != WebSocketState.Open)
+                    return;
+                await sock.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Binary, true, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                sendGate.Release();
+            }
         }
 
         public async void Navigate(string s)
@@ -130,7 +320,7 @@ namespace BrowserClient
             string PacketJSON = JsonConvert.SerializeObject(cp);
             var encoded = Encoding.UTF8.GetBytes(PacketJSON);
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void NavigateForward()
@@ -144,7 +334,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
         public async void NavigateBack(bool stopBeforeBlank = false)
         {
@@ -158,7 +348,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void SendKey(Windows.UI.Xaml.Input.KeyRoutedEventArgs key)
@@ -181,7 +371,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async Task SendBackspace()
@@ -196,7 +386,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async Task SendEnterKey()
@@ -211,7 +401,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async Task SendKeyCode(int code, string type)
@@ -226,7 +416,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void SizeChange(Windows.Foundation.Size newSize, double scale = 0)
@@ -249,7 +439,7 @@ namespace BrowserClient
             string PacketJSON = JsonConvert.SerializeObject(cp);
             var encoded = Encoding.UTF8.GetBytes(PacketJSON);
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void TouchDown(Point p, uint pointerId)
@@ -272,7 +462,7 @@ namespace BrowserClient
 
             var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(cp));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
 
 
         }
@@ -295,7 +485,7 @@ namespace BrowserClient
 
             var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(cp));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
 
 
         }
@@ -312,7 +502,7 @@ namespace BrowserClient
             }));
 
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
         public async void TouchMove(Point p, uint pointerId)
         {
@@ -334,7 +524,7 @@ namespace BrowserClient
 
             var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(cp));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
             
         }
 
@@ -351,7 +541,7 @@ namespace BrowserClient
 
             var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(cp));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void CreateTab()
@@ -364,7 +554,7 @@ namespace BrowserClient
                 PType = PacketType.CreateTab
             }));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void CloseTab(string tabId)
@@ -378,7 +568,7 @@ namespace BrowserClient
                 JSONData = tabId
             }));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async void SwitchTab(string tabId)
@@ -392,7 +582,7 @@ namespace BrowserClient
                 JSONData = tabId
             }));
             var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await sock.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+            await SendTextAsync(buffer);
         }
 
         public async Task<BitmapImage> ConvertToBitmapImage(byte[] image)

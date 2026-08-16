@@ -35,6 +35,12 @@ namespace BrowserServer
 
             protected override void OnMessage(MessageEventArgs e)
             {
+                if (e.IsBinary)
+                {
+                    MediaBridge.HandleClientBinary(e.RawData);
+                    return;
+                }
+
                 var packet = JsonConvert.DeserializeObject<CommPacket>(e.Data);
                 var browser = TabManager.ActiveBrowser;
                 if (browser == null && packet.PType != PacketType.CreateTab)
@@ -56,6 +62,17 @@ namespace BrowserServer
                             TabManager.SwitchTab(packet.JSONData);
                         break;
 
+                    case PacketType.MediaPermissionResponse:
+                        try
+                        {
+                            var media = JsonConvert.DeserializeObject<MediaPermissionPayload>(packet.JSONData ?? "");
+                            MediaBridge.HandlePermissionResponse(media);
+                        }
+                        catch
+                        {
+                        }
+                        break;
+
                     case PacketType.TextInputSend:
                         Console.WriteLine(packet.JSONData);
                         var textscript = @"(function (){document.activeElement.value='" + packet.JSONData + "'})();";
@@ -74,6 +91,18 @@ namespace BrowserServer
 
                     case PacketType.ACK:
                         Console.WriteLine("ACK");
+                        break;
+
+                    case PacketType.DownloadAck:
+                        try
+                        {
+                            var ack = JsonConvert.DeserializeObject<DownloadAckPayload>(packet.JSONData ?? "");
+                            if (ack != null)
+                                StreamingDownloadHandler.HandleClientAck(ack.id, ack.seq);
+                        }
+                        catch
+                        {
+                        }
                         break;
 
                     case PacketType.SendKey:
@@ -287,20 +316,38 @@ namespace BrowserServer
             settings.CefCommandLineArgs["disable-gpu-compositing"] = "1";
             // Allow media autoplay so remote audio can start without a desktop gesture.
             settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
+            // Help synthetic camera tracks for getUserMedia shims.
+            settings.CefCommandLineArgs["enable-blink-features"] = "MediaStreamTrackGenerator,WebCodecs";
             // OffScreen CefSettings adds "mute-audio" by default; without this, AudioHandler never fires.
             settings.EnableAudio();
             if (settings.CefCommandLineArgs.ContainsKey("mute-audio"))
                 settings.CefCommandLineArgs.Remove("mute-audio");
+
+            // Phone camera/mic bridge — fetchable from https pages (treated as secure).
+            settings.RegisterScheme(new CefCustomScheme
+            {
+                SchemeName = "cbmedia",
+                SchemeHandlerFactory = new MediaSchemeHandlerFactory(),
+                DomainName = "local",
+                IsStandard = true,
+                IsSecure = true,
+                IsCorsEnabled = true,
+                IsFetchEnabled = true,
+                IsCSPBypassing = true
+            });
+
             settings.LogSeverity = LogSeverity.Warning;
             settings.LogFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp\\debug.log");
             settings.MultiThreadedMessageLoop = true;
             Cef.Initialize(settings, performDependencyCheck: true, browserProcessHandler: null);
+            StreamingDownloadHandler.PurgeTempFolder();
 
             TabManager.CreateTab(testUrl);
 
             Console.Clear();
             Console.WriteLine("Browser server is now running, you can connect to it via ws://" + NetworkManager.GetLocalIPAddress() + ":8081");
             Console.WriteLine("Audio capture: ENABLED (expect 'Audio start' when a page plays sound)");
+            Console.WriteLine("Phone camera/mic: ENABLED (sites calling getUserMedia prompt on the client)");
             Console.WriteLine("Or click the Discovery button in the UWP app to autimatically find the server on your local network");
             Console.WriteLine();
             Console.WriteLine();
@@ -316,12 +363,15 @@ namespace BrowserServer
             Console.WriteLine("9. congratulations! you just connected over the internet");
 
             NetworkManager.StartUdpDiscoveryServer();
-            // Video ~20fps; audio flush more often so PCM does not pile up / stutter.
+            // Video ~20fps; audio/download flush more often so PCM/files do not pile up.
             var timer = new Timer(Callback, null, 0, 50);
             var audioTimer = new Timer(_ => StreamingAudioHandler.FlushOutbound(), null, 0, 10);
+            var downloadTimer = new Timer(_ => StreamingDownloadHandler.FlushOutbound(), null, 0, 25);
 
             Console.ReadKey();
+            downloadTimer.Dispose();
             audioTimer.Dispose();
+            StreamingDownloadHandler.PurgeTempFolder();
             Cef.Shutdown();
             timer.Dispose();
         }
@@ -345,6 +395,11 @@ namespace BrowserServer
             {
                 var browser = TabManager.ActiveBrowser;
                 if (browser == null || !browser.IsBrowserInitialized)
+                    return;
+
+                // While a file is streaming to the phone, skip JPEG frames so FILE chunks
+                // are not delayed/lost on the shared WebSocket (avoids transfer interrupts).
+                if (StreamingDownloadHandler.IsStreamingToClients)
                     return;
 
                 // Recover if a previous capture never finished (used to cause permanent black screen).

@@ -83,17 +83,24 @@ namespace BrowserServer
         private static TabSession CreateTabUnlocked(string url, bool setActive)
         {
             var id = Guid.NewGuid().ToString("N");
-            // Create blank first so AudioHandler is attached before the real page starts media.
-            var browser = new ChromiumWebBrowser("about:blank");
+            // Create browser manually so JS media bridge can register before CEF spins up.
+            var browser = new ChromiumWebBrowser(
+                address: "",
+                browserSettings: null,
+                requestContext: null,
+                automaticallyCreateBrowser: false);
             browser.DeviceScaleFactor = DeviceScaleFactor;
             browser.Size = BrowserSize;
             browser.LifeSpanHandler = new SameTabLifeSpanHandler();
             browser.RequestHandler = new PermissiveRequestHandler();
             browser.AudioHandler = new StreamingAudioHandler(id);
+            browser.DownloadHandler = new StreamingDownloadHandler(id);
+            MediaBridge.AttachToBrowser(browser, id);
             MobileChromeIdentity.Apply(browser);
             if (CreateRenderHandler != null)
                 browser.RenderHandler = CreateRenderHandler(browser, id);
-            browser.Load(url);
+            browser.CreateBrowser();
+            browser.Load(url ?? DefaultUrl);
 
             var session = new TabSession
             {
@@ -114,9 +121,18 @@ namespace BrowserServer
             };
             browser.FrameLoadEnd += (s, e) =>
             {
-                if (!e.Frame.IsMain)
+                if (e.Frame == null || !e.Frame.IsValid)
                     return;
-                Console.WriteLine("Loaded: " + e.Url);
+                if (e.Frame.IsMain)
+                    Console.WriteLine("Loaded: " + e.Url);
+                // Inject into iframes too — many camera testers host getUserMedia off-main-frame.
+                MediaBridge.InjectShim(e.Frame);
+            };
+
+            browser.FrameLoadStart += (s, e) =>
+            {
+                if (e.Frame != null && e.Frame.IsValid)
+                    MediaBridge.InjectShim(e.Frame);
             };
 
             Tabs[id] = session;
@@ -360,6 +376,7 @@ namespace BrowserServer
 
             try
             {
+                MediaBridge.Release(session.Id);
                 session.Browser.Dispose();
             }
             catch
