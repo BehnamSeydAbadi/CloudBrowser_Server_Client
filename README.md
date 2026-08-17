@@ -39,8 +39,10 @@ For now your phone and your server needs to be on the same network
 - [X] Tabs
 - [X] Back/Forward
 - [X] File downloads (Till 200MB is funtional)
+- [X] Camera + QRCode scanning 
 
 ### What's needed
+- [ ] Microphone
 - [ ] HiDPI
 - [ ] Improve audio playback quality
 - [ ] Faster rendering (GPU?)
@@ -48,7 +50,6 @@ For now your phone and your server needs to be on the same network
 - [ ] Configurable streaming quality (ondemand rendering?)
 - [ ] File uploads
 - [ ] Large File downloads
-- [ ] Camera & microphone (basic getUserMedia via phone)
 - [ ] Notifications
 - [ ] In Private/Incognito
 - [ ] General browser stuff
