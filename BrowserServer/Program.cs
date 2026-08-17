@@ -316,8 +316,6 @@ namespace BrowserServer
             settings.CefCommandLineArgs["disable-gpu-compositing"] = "1";
             // Allow media autoplay so remote audio can start without a desktop gesture.
             settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
-            // Help synthetic camera tracks for getUserMedia shims.
-            settings.CefCommandLineArgs["enable-blink-features"] = "MediaStreamTrackGenerator,WebCodecs";
             // OffScreen CefSettings adds "mute-audio" by default; without this, AudioHandler never fires.
             settings.EnableAudio();
             if (settings.CefCommandLineArgs.ContainsKey("mute-audio"))
@@ -348,6 +346,7 @@ namespace BrowserServer
             Console.WriteLine("Browser server is now running, you can connect to it via ws://" + NetworkManager.GetLocalIPAddress() + ":8081");
             Console.WriteLine("Audio capture: ENABLED (expect 'Audio start' when a page plays sound)");
             Console.WriteLine("Phone camera/mic: ENABLED (sites calling getUserMedia prompt on the client)");
+            Console.WriteLine("QR decode: ENABLED (while camera is on, HTTP(S) codes open automatically)");
             Console.WriteLine("Or click the Discovery button in the UWP app to autimatically find the server on your local network");
             Console.WriteLine();
             Console.WriteLine();
@@ -381,6 +380,7 @@ namespace BrowserServer
 
         static int captureInFlight = 0;
         static int captureStartedTick = 0;
+        static int lastMediaAwareFrameTick = 0;
         const int CaptureStuckMs = 3000;
 
         public static void ResetCaptureState()
@@ -401,6 +401,17 @@ namespace BrowserServer
                 // are not delayed/lost on the shared WebSocket (avoids transfer interrupts).
                 if (StreamingDownloadHandler.IsStreamingToClients)
                     return;
+
+                bool mediaOn = MediaBridge.IsCaptureActive;
+                // Keep a slow page stream while camera is on (so QR UI still updates), but
+                // leave most of the WS for CAM uplink — full 20fps + CAM freezes WM10.
+                if (mediaOn)
+                {
+                    var now = Environment.TickCount;
+                    if (now - lastMediaAwareFrameTick < 400)
+                        return;
+                    lastMediaAwareFrameTick = now;
+                }
 
                 // Recover if a previous capture never finished (used to cause permanent black screen).
                 if (Interlocked.CompareExchange(ref captureInFlight, 1, 0) != 0)
@@ -426,7 +437,9 @@ namespace BrowserServer
                             return;
 
                         var encoderParameters = new EncoderParameters(1);
-                        encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 70L);
+                        encoderParameters.Param[0] = new EncoderParameter(
+                            System.Drawing.Imaging.Encoder.Quality,
+                            mediaOn ? 45L : 70L);
                         using (var stream = new MemoryStream())
                         {
                             bitmap.Save(stream, GetEncoder(ImageFormat.Jpeg), encoderParameters);

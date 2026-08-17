@@ -198,6 +198,25 @@ namespace BrowserServer
         private static float pendingScale;
         private static Timer viewportDebounceTimer;
 
+        public static void NavigateActive(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+
+            var browser = ActiveBrowser;
+            if (browser == null || !browser.IsBrowserInitialized)
+                return;
+
+            try
+            {
+                browser.LoadUrl(url.Trim());
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("NavigateActive error: " + ex.Message);
+            }
+        }
+
         public static void SetViewport(int cssWidth, int cssHeight, float deviceScaleFactor)
         {
             if (cssWidth < 1 || cssHeight < 1)
@@ -360,7 +379,10 @@ namespace BrowserServer
 
             BroadcastTabList();
             if (isActive)
+            {
                 BroadcastNavigatedUrl(session.Url);
+                MediaBridge.OnNavigated(session.Id, session.Url);
+            }
         }
 
         private static void OnTitleChanged(TabSession session, TitleChangedEventArgs e)

@@ -185,11 +185,46 @@ namespace BrowserClient
                     if (payload != null)
                         MediaPermissionRequested?.Invoke(this, payload);
                 }
+                else if (packet.PType == TextPacketType.MediaCaptureUpgrade)
+                {
+                    var payload = JsonConvert.DeserializeObject<MediaPermissionPayload>(packet.text);
+                    if (payload != null)
+                    {
+                        var ignored = RespondMediaUpgradeAsync(payload);
+                    }
+                }
                 else if (packet.PType == TextPacketType.MediaCaptureStop)
                 {
                     var payload = JsonConvert.DeserializeObject<MediaPermissionPayload>(packet.text);
                     MediaCapture.StopIfRequest(payload?.requestId);
                 }
+            }
+            catch
+            {
+            }
+        }
+
+        public async Task RespondMediaUpgradeAsync(MediaPermissionPayload request)
+        {
+            if (request == null || string.IsNullOrEmpty(request.requestId))
+                return;
+
+            var ok = await MediaCapture.EnsureAsync(request.requestId, request.audio, request.video);
+            try
+            {
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.MediaPermissionResponse,
+                    JSONData = JsonConvert.SerializeObject(new MediaPermissionPayload
+                    {
+                        requestId = request.requestId,
+                        allowed = ok,
+                        audio = request.audio,
+                        video = request.video,
+                        origin = request.origin
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
             }
             catch
             {
@@ -298,7 +333,21 @@ namespace BrowserClient
             if (payload == null || payload.Length == 0)
                 return;
 
-            await sendGate.WaitAsync().ConfigureAwait(false);
+            // CAM/MIC must never block behind a backlog — drop the frame if the socket is busy.
+            bool isMediaUplink = payload.Length >= 4 &&
+                ((payload[0] == (byte)'C' && payload[1] == (byte)'A' && payload[2] == (byte)'M' && payload[3] == (byte)' ') ||
+                 (payload[0] == (byte)'M' && payload[1] == (byte)'I' && payload[2] == (byte)'C' && payload[3] == (byte)' '));
+
+            if (isMediaUplink)
+            {
+                if (!await sendGate.WaitAsync(0).ConfigureAwait(false))
+                    return;
+            }
+            else
+            {
+                await sendGate.WaitAsync().ConfigureAwait(false);
+            }
+
             try
             {
                 if (sock == null || sock.State != WebSocketState.Open)

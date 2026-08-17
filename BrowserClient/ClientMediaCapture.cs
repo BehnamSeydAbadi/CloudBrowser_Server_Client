@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading;
 using System.Threading.Tasks;
+using Windows.Graphics.Display;
 using Windows.Graphics.Imaging;
 using Windows.Media;
 using Windows.Media.Audio;
@@ -27,9 +28,18 @@ namespace BrowserClient
         private AudioFrameOutputNode frameOut;
         private CancellationTokenSource pumpCts;
         private string activeRequestId;
+        private bool wantAudio;
+        private bool wantVideo;
         private bool disposed;
         private int videoFramesSent;
         private int videoFailures;
+        private int micPacketsSent;
+
+        /// <summary>Cached on UI thread — phone is usually portrait; sensor frames are landscape.</summary>
+        private BitmapRotation encodeRotation = BitmapRotation.Clockwise270Degrees;
+        private VideoRotation previewRotation = VideoRotation.Clockwise270Degrees;
+        private int outWidth = 480;
+        private int outHeight = 640;
 
         public Func<byte[], Task> SendBinaryAsync { get; set; }
         public CaptureElement PreviewElement { get; set; }
@@ -37,6 +47,63 @@ namespace BrowserClient
         public bool IsActive
         {
             get { lock (sync) return activeRequestId != null; }
+        }
+
+        public bool HasAudio
+        {
+            get { lock (sync) return wantAudio && audioGraph != null; }
+        }
+
+        public bool HasVideo
+        {
+            get { lock (sync) return wantVideo && mediaCapture != null; }
+        }
+
+        /// <summary>Start or upgrade an existing session (e.g. add mic after video-only).</summary>
+        public async Task<bool> EnsureAsync(string requestId, bool audio, bool video)
+        {
+            if (string.IsNullOrEmpty(requestId) || (!audio && !video))
+                return false;
+
+            bool already;
+            lock (sync)
+            {
+                already = activeRequestId != null;
+            }
+
+            if (!already)
+                return await StartAsync(requestId, audio, video).ConfigureAwait(true);
+
+            try
+            {
+                if (video && !HasVideo)
+                {
+                    // Rare — restart full session with both.
+                    return await StartAsync(requestId, audio || HasAudio, true).ConfigureAwait(true);
+                }
+
+                if (audio && !HasAudio)
+                {
+                    await StartMicGraphAsync().ConfigureAwait(true);
+                    CancellationToken token;
+                    lock (sync)
+                    {
+                        wantAudio = true;
+                        activeRequestId = requestId;
+                        token = pumpCts != null ? pumpCts.Token : CancellationToken.None;
+                    }
+                    var ignored = Task.Run(() => MicPumpLoopAsync(token));
+                    Debug.WriteLine("Mic upgraded onto existing capture session");
+                }
+
+                lock (sync) activeRequestId = requestId;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("MediaCapture.EnsureAsync failed: " + ex);
+                return false;
+            }
         }
 
         public async Task<bool> StartAsync(string requestId, bool audio, bool video)
@@ -66,30 +133,56 @@ namespace BrowserClient
                     capture = new MediaCapture();
                     await capture.InitializeAsync(settings);
 
-                    // Required on Windows Mobile — preview will not run without a CaptureElement.
+                    RefreshCaptureRotation();
+
                     PreviewElement.Source = capture;
+                    // Make preview slightly visible so WM keeps the pipeline hot.
+                    PreviewElement.Opacity = 0.01;
+                    PreviewElement.Width = 32;
+                    PreviewElement.Height = 24;
                     await capture.StartPreviewAsync();
-                    Debug.WriteLine("Camera preview started");
+                    try
+                    {
+                        capture.SetPreviewRotation(previewRotation);
+                    }
+                    catch (Exception rotEx)
+                    {
+                        Debug.WriteLine("SetPreviewRotation failed: " + rotEx.Message);
+                    }
+                    Debug.WriteLine("Camera preview started rotation=" + encodeRotation + " out=" + outWidth + "x" + outHeight);
                 }
 
                 lock (sync)
                 {
                     mediaCapture = capture;
                     activeRequestId = requestId;
+                    wantAudio = audio;
+                    wantVideo = video;
                     pumpCts = new CancellationTokenSource();
                     videoFramesSent = 0;
                     videoFailures = 0;
+                    micPacketsSent = 0;
                 }
 
                 if (audio)
-                    await StartMicGraphAsync().ConfigureAwait(true);
+                {
+                    try
+                    {
+                        await StartMicGraphAsync().ConfigureAwait(true);
+                    }
+                    catch (Exception micEx)
+                    {
+                        Debug.WriteLine("Mic start failed (continuing with video): " + micEx.Message);
+                        lock (sync) wantAudio = false;
+                    }
+                }
 
                 var token = pumpCts.Token;
                 if (video)
                 {
                     var ignoredVideo = Task.Run(() => VideoPumpLoopAsync(token));
                 }
-                if (audio)
+                if (wantAudio)
                 {
                     var ignoredAudio = Task.Run(() => MicPumpLoopAsync(token));
                 }
@@ -133,6 +226,8 @@ namespace BrowserClient
                 capture = mediaCapture;
                 mediaCapture = null;
                 activeRequestId = null;
+                wantAudio = false;
+                wantVideo = false;
             }
 
             try { cts?.Cancel(); } catch { }
@@ -169,11 +264,29 @@ namespace BrowserClient
                 throw new InvalidOperationException("AudioGraph create failed: " + create.Status);
 
             var graph = create.Graph;
-            var micResult = await graph.CreateDeviceInputNodeAsync(Windows.Media.Capture.MediaCategory.Other);
-            if (micResult.Status != AudioDeviceNodeCreationStatus.Success)
+            AudioDeviceNodeCreationStatus status;
+            CreateAudioDeviceInputNodeResult micResult = null;
+
+            // Try a few categories — WM devices vary.
+            var categories = new[]
+            {
+                Windows.Media.Capture.MediaCategory.Communications,
+                Windows.Media.Capture.MediaCategory.Speech,
+                Windows.Media.Capture.MediaCategory.Other
+            };
+            foreach (var cat in categories)
+            {
+                micResult = await graph.CreateDeviceInputNodeAsync(cat);
+                status = micResult.Status;
+                if (status == AudioDeviceNodeCreationStatus.Success)
+                    break;
+                Debug.WriteLine("Mic node category " + cat + " failed: " + status);
+            }
+
+            if (micResult == null || micResult.Status != AudioDeviceNodeCreationStatus.Success)
             {
                 graph.Dispose();
-                throw new InvalidOperationException("Mic node failed: " + micResult.Status);
+                throw new InvalidOperationException("Mic node failed: " + (micResult != null ? micResult.Status.ToString() : "null"));
             }
 
             var outNode = graph.CreateFrameOutputNode();
@@ -224,11 +337,13 @@ namespace BrowserClient
                     byte[] jpeg = await CaptureJpegAsync(capture).ConfigureAwait(false);
                     if (jpeg != null && jpeg.Length > 0 && SendBinaryAsync != null)
                     {
-                        var packet = BuildCamPacket(jpeg, 640, 480);
+                        int w, h;
+                        lock (sync) { w = outWidth; h = outHeight; }
+                        var packet = BuildCamPacket(jpeg, w, h);
                         await SendBinaryAsync(packet).ConfigureAwait(false);
                         var n = Interlocked.Increment(ref videoFramesSent);
                         if (n == 1 || n % 25 == 0)
-                            Debug.WriteLine("CAM uplink frames=" + n + " bytes=" + jpeg.Length);
+                            Debug.WriteLine("CAM uplink frames=" + n + " bytes=" + jpeg.Length + " " + w + "x" + h);
                     }
                     else
                     {
@@ -242,7 +357,7 @@ namespace BrowserClient
                     Debug.WriteLine("CAM pump error: " + ex.Message);
                 }
 
-                try { await Task.Delay(150, token).ConfigureAwait(false); }
+                try { await Task.Delay(250, token).ConfigureAwait(false); }
                 catch (TaskCanceledException) { break; }
             }
         }
@@ -269,7 +384,12 @@ namespace BrowserClient
                         {
                             var packet = FrameToMicPacket(frame, (int)graph.EncodingProperties.SampleRate);
                             if (packet != null && SendBinaryAsync != null)
+                            {
                                 await SendBinaryAsync(packet).ConfigureAwait(false);
+                                var n = Interlocked.Increment(ref micPacketsSent);
+                                if (n == 1 || n % 100 == 0)
+                                    Debug.WriteLine("MIC uplink packets=" + n);
+                            }
                         }
                     }
                 }
@@ -282,36 +402,116 @@ namespace BrowserClient
             }
         }
 
-        private static async Task<byte[]> CaptureJpegAsync(MediaCapture capture)
+        /// <summary>
+        /// Phone cameras deliver landscape sensor buffers. When the device is held in portrait
+        /// (normal for WM), rotate so websites see an upright vertical frame.
+        /// </summary>
+        private void RefreshCaptureRotation()
         {
-            // Prefer preview frames — CapturePhotoToStreamAsync is flaky without photo mode / shutter.
+            DisplayOrientations orientation;
             try
             {
-                using (var videoFrame = new VideoFrame(BitmapPixelFormat.Bgra8, 640, 480))
+                orientation = DisplayInformation.GetForCurrentView().CurrentOrientation;
+            }
+            catch
+            {
+                orientation = DisplayOrientations.Portrait;
+            }
+
+            // Back-camera style mapping. User needs counter-clockwise 90° in portrait
+            // (= Clockwise270Degrees) so the upright phone feed is not landscape.
+            switch (orientation)
+            {
+                case DisplayOrientations.PortraitFlipped:
+                    previewRotation = VideoRotation.Clockwise90Degrees;
+                    encodeRotation = BitmapRotation.Clockwise90Degrees;
+                    outWidth = 480;
+                    outHeight = 640;
+                    break;
+                case DisplayOrientations.LandscapeFlipped:
+                    previewRotation = VideoRotation.Clockwise180Degrees;
+                    encodeRotation = BitmapRotation.Clockwise180Degrees;
+                    outWidth = 640;
+                    outHeight = 480;
+                    break;
+                case DisplayOrientations.Landscape:
+                    previewRotation = VideoRotation.None;
+                    encodeRotation = BitmapRotation.None;
+                    outWidth = 640;
+                    outHeight = 480;
+                    break;
+                case DisplayOrientations.Portrait:
+                default:
+                    previewRotation = VideoRotation.Clockwise270Degrees;
+                    encodeRotation = BitmapRotation.Clockwise270Degrees;
+                    outWidth = 480;
+                    outHeight = 640;
+                    break;
+            }
+        }
+
+        private async Task<byte[]> CaptureJpegAsync(MediaCapture capture)
+        {
+            try
+            {
+                const int scaleW = 640;
+                const int scaleH = 480;
+
+                using (var videoFrame = new VideoFrame(BitmapPixelFormat.Bgra8, scaleW, scaleH))
                 {
                     var preview = await capture.GetPreviewFrameAsync(videoFrame);
                     if (preview?.SoftwareBitmap == null)
                         return null;
 
-                    using (var stream = new InMemoryRandomAccessStream())
+                    // BitmapEncoder.BitmapTransform.Rotation is ignored with SetSoftwareBitmap on WM —
+                    // rotate the pixels ourselves (counter-clockwise 90° = Clockwise270).
+                    SoftwareBitmap toEncode;
+                    int jpegW, jpegH;
+                    BitmapRotation rotation;
+                    lock (sync) rotation = encodeRotation;
+
+                    using (var bgra = SoftwareBitmap.Convert(
+                        preview.SoftwareBitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore))
                     {
-                        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream);
-                        encoder.SetSoftwareBitmap(SoftwareBitmap.Convert(
-                            preview.SoftwareBitmap,
-                            BitmapPixelFormat.Bgra8,
-                            BitmapAlphaMode.Ignore));
-                        encoder.BitmapTransform.ScaledWidth = 640;
-                        encoder.BitmapTransform.ScaledHeight = 480;
-                        encoder.BitmapTransform.InterpolationMode = BitmapInterpolationMode.Linear;
-                        // Quality ~0.7 via JPEG property — keep Wi‑Fi usable.
-                        var props = new Windows.Graphics.Imaging.BitmapPropertySet();
-                        props["ImageQuality"] = new Windows.Graphics.Imaging.BitmapTypedValue(0.7, Windows.Foundation.PropertyType.Single);
-                        try { await encoder.BitmapProperties.SetPropertiesAsync(props); } catch { }
-                        await encoder.FlushAsync();
-                        stream.Seek(0);
-                        var bytes = new byte[stream.Size];
-                        await stream.ReadAsync(bytes.AsBuffer(), (uint)bytes.Length, InputStreamOptions.None);
-                        return bytes;
+                        if (rotation == BitmapRotation.None)
+                        {
+                            toEncode = SoftwareBitmap.Copy(bgra);
+                            jpegW = bgra.PixelWidth;
+                            jpegH = bgra.PixelHeight;
+                        }
+                        else
+                        {
+                            toEncode = RotateBgra(bgra, rotation);
+                            jpegW = toEncode.PixelWidth;
+                            jpegH = toEncode.PixelHeight;
+                        }
+                    }
+
+                    lock (sync)
+                    {
+                        outWidth = jpegW;
+                        outHeight = jpegH;
+                    }
+
+                    try
+                    {
+                        using (var stream = new InMemoryRandomAccessStream())
+                        {
+                            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream);
+                            encoder.SetSoftwareBitmap(toEncode);
+                            var props = new BitmapPropertySet();
+                            props["ImageQuality"] = new BitmapTypedValue(0.55f, Windows.Foundation.PropertyType.Single);
+                            try { await encoder.BitmapProperties.SetPropertiesAsync(props); } catch { }
+                            await encoder.FlushAsync();
+                            stream.Seek(0);
+                            var bytes = new byte[stream.Size];
+                            await stream.ReadAsync(bytes.AsBuffer(), (uint)bytes.Length, InputStreamOptions.None);
+                            return bytes;
+                        }
+                    }
+                    finally
+                    {
+                        toEncode.Dispose();
                     }
                 }
             }
@@ -320,6 +520,91 @@ namespace BrowserClient
                 Debug.WriteLine("GetPreviewFrameAsync failed: " + ex.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Rotate BGRA SoftwareBitmap. Clockwise270Degrees = 90° counter-clockwise (what we need in portrait).
+        /// </summary>
+        private static SoftwareBitmap RotateBgra(SoftwareBitmap source, BitmapRotation rotation)
+        {
+            int w = source.PixelWidth;
+            int h = source.PixelHeight;
+            var srcBuf = new byte[4 * w * h];
+            source.CopyToBuffer(srcBuf.AsBuffer());
+
+            int dw, dh;
+            byte[] dstBuf;
+
+            if (rotation == BitmapRotation.Clockwise90Degrees)
+            {
+                // (x,y) → (h-1-y, x)  dest size h×w
+                dw = h;
+                dh = w;
+                dstBuf = new byte[4 * dw * dh];
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        int s = (y * w + x) * 4;
+                        int dx = h - 1 - y;
+                        int dy = x;
+                        int d = (dy * dw + dx) * 4;
+                        dstBuf[d] = srcBuf[s];
+                        dstBuf[d + 1] = srcBuf[s + 1];
+                        dstBuf[d + 2] = srcBuf[s + 2];
+                        dstBuf[d + 3] = srcBuf[s + 3];
+                    }
+                }
+            }
+            else if (rotation == BitmapRotation.Clockwise270Degrees)
+            {
+                // 90° counter-clockwise: (x,y) → (y, w-1-x)  dest size h×w
+                dw = h;
+                dh = w;
+                dstBuf = new byte[4 * dw * dh];
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        int s = (y * w + x) * 4;
+                        int dx = y;
+                        int dy = w - 1 - x;
+                        int d = (dy * dw + dx) * 4;
+                        dstBuf[d] = srcBuf[s];
+                        dstBuf[d + 1] = srcBuf[s + 1];
+                        dstBuf[d + 2] = srcBuf[s + 2];
+                        dstBuf[d + 3] = srcBuf[s + 3];
+                    }
+                }
+            }
+            else if (rotation == BitmapRotation.Clockwise180Degrees)
+            {
+                dw = w;
+                dh = h;
+                dstBuf = new byte[4 * dw * dh];
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        int s = (y * w + x) * 4;
+                        int dx = w - 1 - x;
+                        int dy = h - 1 - y;
+                        int d = (dy * dw + dx) * 4;
+                        dstBuf[d] = srcBuf[s];
+                        dstBuf[d + 1] = srcBuf[s + 1];
+                        dstBuf[d + 2] = srcBuf[s + 2];
+                        dstBuf[d + 3] = srcBuf[s + 3];
+                    }
+                }
+            }
+            else
+            {
+                return SoftwareBitmap.Copy(source);
+            }
+
+            var dest = new SoftwareBitmap(BitmapPixelFormat.Bgra8, dw, dh, BitmapAlphaMode.Ignore);
+            dest.CopyFromBuffer(dstBuf.AsBuffer());
+            return dest;
         }
 
         private static byte[] BuildCamPacket(byte[] jpeg, int width, int height)

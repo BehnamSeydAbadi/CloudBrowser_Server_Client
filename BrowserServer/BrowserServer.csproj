@@ -104,11 +104,15 @@
     <Reference Include="websocket-sharp, Version=1.0.2.32519, Culture=neutral, PublicKeyToken=5660b08a1845a91e, processorArchitecture=MSIL">
       <HintPath>..\packages\WebSocketSharp-NonPreRelease.1.0.0\lib\net35\websocket-sharp.dll</HintPath>
     </Reference>
+    <Reference Include="zxing, Version=0.16.9.0, Culture=neutral, PublicKeyToken=4e88037ac681fe60, processorArchitecture=MSIL">
+      <HintPath>..\packages\ZXing.Net.0.16.9\lib\net47\zxing.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BrowserHandlers.cs" />
     <Compile Include="MediaBridge.cs" />
     <Compile Include="MediaSchemeHandler.cs" />
+    <Compile Include="QrScanService.cs" />
     <Compile Include="StreamingAudioHandler.cs" />
     <Compile Include="StreamingDownloadHandler.cs" />
     <Compile Include="JavascriptFunctions.cs" />

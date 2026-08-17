@@ -450,9 +450,50 @@ namespace BrowserClient
                             // DownloadStore already updated inside WebBrowserDataSource;
                             // ListChanged drives toasts + list refresh.
                             break;
+
+                        case TextPacketType.QrDetected:
+                            var qrIgnored = HandleQrDetectedAsync(o.text);
+                            break;
                     }
                 });
             };
+        }
+
+        private async Task HandleQrDetectedAsync(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            text = text.Trim();
+            ShowDownloadToast(text.Length > 48 ? ("QR: " + text.Substring(0, 45) + "…") : ("QR: " + text));
+
+            // HTTP(S) links are opened by the server; non-URL payloads get a dialog.
+            Uri uri;
+            var looksLikeUrl =
+                (Uri.TryCreate(text, UriKind.Absolute, out uri) &&
+                 (uri.Scheme == "http" || uri.Scheme == "https")) ||
+                text.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+            if (looksLikeUrl)
+                return;
+
+            try
+            {
+                var dialog = new ContentDialog
+                {
+                    Title = "QR Code",
+                    Content = text,
+                    PrimaryButtonText = "Search",
+                    SecondaryButtonText = "OK"
+                };
+                var result = await dialog.ShowAsync();
+                if (result == ContentDialogResult.Primary && ds != null)
+                    ds.Navigate(text);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("QR dialog: " + ex.Message);
+            }
         }
 
         private void Downloads_ListChanged(object sender, EventArgs e)

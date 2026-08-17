@@ -38,7 +38,11 @@ namespace BrowserServer
         /// <summary>Site wants camera/mic — JSON MediaPermissionPayload.</summary>
         MediaPermissionRequest,
         /// <summary>Page released media tracks — stop phone capture.</summary>
-        MediaCaptureStop
+        MediaCaptureStop,
+        /// <summary>Already capturing — add mic/camera without a new prompt.</summary>
+        MediaCaptureUpgrade,
+        /// <summary>QR payload decoded from the phone camera (plain text).</summary>
+        QrDetected
     }
 
     public enum PacketType
