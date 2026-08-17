@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -12,23 +11,31 @@ namespace BrowserClient
 {
     /// <summary>
     /// Plays PCM audio packets forwarded from BrowserServer (AUDI binary frames).
-    /// Uses a sample queue + QuantumStarted so playback is pull-driven and safe across awaits.
+    /// Pull-driven via QuantumStarted, with a small channel-aligned jitter buffer.
+    /// Dropping single samples (old code) desynced L/R after a few seconds and
+    /// made playback sound crushed/underwater.
     /// </summary>
     public sealed class StreamAudioPlayer : IDisposable
     {
-        private const int MaxQueuedSamples = 48000 * 2 * 2; // ~2s stereo @ 48k
+        private const int TargetMs = 90;
+        private const int MaxMs = 220;
+        private const int PrerollMs = 70;
 
-        private readonly ConcurrentQueue<float> sampleQueue = new ConcurrentQueue<float>();
         private readonly object sync = new object();
+        private float[] ring = new float[48000 * 2];
+        private int ringRead;
+        private int ringWrite;
+        private int ringCount;
 
         private AudioGraph graph;
         private AudioDeviceOutputNode deviceOutput;
         private AudioFrameInputNode frameInput;
-        private int sampleRate;
-        private int channels;
+        private int sampleRate = 48000;
+        private int channels = 2;
         private int nodeChannels = 2;
         private Task startTask;
-        private int queuedSamples;
+        private bool prerolled;
+        private int underrunStreak;
         private bool disposed;
 
         /// <summary>Packet buffer must be owned by the caller (not the shared WebSocket receive buffer).</summary>
@@ -49,19 +56,22 @@ namespace BrowserClient
             EnsureGraphStarted(rate, ch);
 
             int offset = 16;
-            for (int i = 0; i < frames * ch; i++)
+            int sampleCount = frames * ch;
+            lock (sync)
             {
-                if (queuedSamples >= MaxQueuedSamples)
+                EnsureRingCapacity(sampleCount + ringCount);
+                for (int i = 0; i < sampleCount; i++)
                 {
-                    float discarded;
-                    if (sampleQueue.TryDequeue(out discarded))
-                        System.Threading.Interlocked.Decrement(ref queuedSamples);
+                    short s = (short)(buffer[offset] | (buffer[offset + 1] << 8));
+                    offset += 2;
+                    ring[ringWrite] = s / 32768f;
+                    ringWrite++;
+                    if (ringWrite == ring.Length)
+                        ringWrite = 0;
+                    ringCount++;
                 }
 
-                short s = (short)(buffer[offset] | (buffer[offset + 1] << 8));
-                offset += 2;
-                sampleQueue.Enqueue(s / 32768f);
-                System.Threading.Interlocked.Increment(ref queuedSamples);
+                TrimToTarget_NoLock();
             }
         }
 
@@ -69,11 +79,9 @@ namespace BrowserClient
         {
             lock (sync)
             {
-                float discarded;
-                while (sampleQueue.TryDequeue(out discarded)) { }
-                queuedSamples = 0;
-                // Keep the graph warm — sites often restart audio streams (MSE). Full teardown
-                // caused long gaps / total silence while CreateAsync ran again.
+                ringRead = ringWrite = ringCount = 0;
+                prerolled = false;
+                underrunStreak = 0;
                 try { frameInput?.Stop(); } catch { }
             }
         }
@@ -83,9 +91,7 @@ namespace BrowserClient
             disposed = true;
             lock (sync)
             {
-                float discarded;
-                while (sampleQueue.TryDequeue(out discarded)) { }
-                queuedSamples = 0;
+                ringRead = ringWrite = ringCount = 0;
                 DisposeGraph_NoLock();
                 startTask = null;
             }
@@ -108,9 +114,9 @@ namespace BrowserClient
                     return;
 
                 DisposeGraph_NoLock();
-                float discarded;
-                while (sampleQueue.TryDequeue(out discarded)) { }
-                queuedSamples = 0;
+                ringRead = ringWrite = ringCount = 0;
+                prerolled = false;
+                underrunStreak = 0;
                 sampleRate = rate;
                 channels = ch;
                 startTask = StartGraphAsync(rate, ch);
@@ -144,7 +150,6 @@ namespace BrowserClient
                 AudioFrameInputNode newInput = null;
                 int useChannels = ch;
 
-                // Prefer a node matching the remote stream; AudioGraph resamples to the device.
                 try
                 {
                     var nodeProps = AudioEncodingProperties.CreatePcm((uint)rate, (uint)ch, 32);
@@ -160,7 +165,6 @@ namespace BrowserClient
                 {
                     try
                     {
-                        // Same rate/channels without overriding subtype.
                         newInput = newGraph.CreateFrameInputNode(
                             AudioEncodingProperties.CreatePcm((uint)rate, (uint)ch, 32));
                     }
@@ -235,37 +239,61 @@ namespace BrowserClient
                     byte* dataInBytes;
                     uint capacityInBytes;
                     ((IMemoryBufferByteAccess)reference).GetBuffer(out dataInBytes, out capacityInBytes);
-
                     float* floats = (float*)dataInBytes;
-                    for (uint f = 0; f < framesNeeded; f++)
-                    {
-                        // Pull one source frame (srcCh samples), write dstCh samples.
-                        float left = 0f, right = 0f;
-                        for (int c = 0; c < srcCh; c++)
-                        {
-                            float sample;
-                            if (!sampleQueue.TryDequeue(out sample))
-                                sample = 0f;
-                            else
-                                System.Threading.Interlocked.Decrement(ref queuedSamples);
 
-                            if (c == 0) left = sample;
-                            else if (c == 1) right = sample;
+                    lock (sync)
+                    {
+                        int prerollSamples = SamplesForMs(PrerollMs);
+                        bool writeSilence = false;
+                        if (!prerolled)
+                        {
+                            if (ringCount < prerollSamples)
+                                writeSilence = true;
                             else
                             {
-                                // Fold extra channels into L/R lightly.
-                                if ((c & 1) == 0) left = Clamp(left + sample * 0.5f);
-                                else right = Clamp(right + sample * 0.5f);
+                                prerolled = true;
+                                underrunStreak = 0;
                             }
                         }
 
-                        if (srcCh == 1)
-                            right = left;
+                        if (writeSilence)
+                        {
+                            ZeroFloats(floats, floatCount);
+                        }
+                        else
+                        {
+                            for (uint f = 0; f < framesNeeded; f++)
+                            {
+                                float left = 0f, right = 0f;
 
-                        uint baseIndex = f * (uint)dstCh;
-                        floats[baseIndex] = left;
-                        if (dstCh > 1)
-                            floats[baseIndex + 1] = right;
+                                // Never dequeue a partial frame — that swapped L/R after underruns.
+                                if (ringCount >= srcCh)
+                                {
+                                    for (int c = 0; c < srcCh; c++)
+                                    {
+                                        float sample = Dequeue_NoLock();
+                                        if (c == 0) left = sample;
+                                        else if (c == 1) right = sample;
+                                        else if ((c & 1) == 0) left = Clamp(left + sample * 0.5f);
+                                        else right = Clamp(right + sample * 0.5f);
+                                    }
+                                    if (srcCh == 1)
+                                        right = left;
+                                    underrunStreak = 0;
+                                }
+                                else
+                                {
+                                    underrunStreak++;
+                                    if (underrunStreak > 8)
+                                        prerolled = false;
+                                }
+
+                                uint baseIndex = f * (uint)dstCh;
+                                floats[baseIndex] = left;
+                                if (dstCh > 1)
+                                    floats[baseIndex + 1] = right;
+                            }
+                        }
                     }
                 }
             }
@@ -278,6 +306,63 @@ namespace BrowserClient
             {
                 Debug.WriteLine("Audio AddFrame error: " + ex.Message);
             }
+        }
+
+        private void TrimToTarget_NoLock()
+        {
+            int ch = channels > 0 ? channels : 1;
+            int maxSamples = SamplesForMs(MaxMs);
+            int targetSamples = SamplesForMs(TargetMs);
+            if (ringCount <= maxSamples)
+                return;
+
+            int drop = ringCount - targetSamples;
+            drop -= drop % ch;
+            if (drop < ch)
+                return;
+
+            ringRead = (ringRead + drop) % ring.Length;
+            ringCount -= drop;
+            Debug.WriteLine("Audio catch-up dropped {0} samples (~{1}ms)", drop, sampleRate > 0 ? drop * 1000 / (sampleRate * ch) : 0);
+        }
+
+        private float Dequeue_NoLock()
+        {
+            float sample = ring[ringRead];
+            ringRead++;
+            if (ringRead == ring.Length)
+                ringRead = 0;
+            ringCount--;
+            return sample;
+        }
+
+        private void EnsureRingCapacity(int needed)
+        {
+            if (needed <= ring.Length)
+                return;
+
+            int size = ring.Length;
+            while (size < needed)
+                size *= 2;
+            var next = new float[size];
+            for (int i = 0; i < ringCount; i++)
+                next[i] = ring[(ringRead + i) % ring.Length];
+            ring = next;
+            ringRead = 0;
+            ringWrite = ringCount;
+        }
+
+        private int SamplesForMs(int ms)
+        {
+            int rate = sampleRate > 0 ? sampleRate : 48000;
+            int ch = channels > 0 ? channels : 1;
+            return Math.Max(ch, rate * ch * ms / 1000);
+        }
+
+        private static unsafe void ZeroFloats(float* dest, uint count)
+        {
+            for (uint i = 0; i < count; i++)
+                dest[i] = 0f;
         }
 
         private static float Clamp(float sample)
@@ -306,6 +391,7 @@ namespace BrowserClient
             frameInput = null;
             deviceOutput = null;
             graph = null;
+            prerolled = false;
         }
 
         private static int ReadInt32(byte[] buffer, int offset)

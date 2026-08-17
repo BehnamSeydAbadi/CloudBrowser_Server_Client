@@ -413,6 +413,10 @@ namespace BrowserServer
                 if (StreamingDownloadHandler.IsStreamingToClients)
                     return;
 
+                // Audio shares this socket with JPEGs — skip a page frame if PCM is backing up.
+                if (StreamingAudioHandler.PendingCount > 12)
+                    return;
+
                 bool mediaOn = MediaBridge.IsCaptureActive;
                 // Keep a slow page stream while camera is on (so QR UI still updates), but
                 // leave most of the WS for CAM uplink — full 20fps + CAM freezes WM10.

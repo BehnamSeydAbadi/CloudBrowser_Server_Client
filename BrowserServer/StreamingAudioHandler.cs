@@ -21,6 +21,7 @@ namespace BrowserServer
         private static readonly ConcurrentQueue<byte[]> Outbound = new ConcurrentQueue<byte[]>();
         private static int outboundCount;
         private static int loggedPackets;
+        private const int MaxOutboundPackets = 24; // ~240ms at 10ms CEF quanta
 
         private readonly string tabId;
         private int channels = 2;
@@ -29,6 +30,12 @@ namespace BrowserServer
         public StreamingAudioHandler(string tabId)
         {
             this.tabId = tabId;
+        }
+
+        /// <summary>AUDI packets waiting to go out — page JPEG should yield when this is high.</summary>
+        public static int PendingCount
+        {
+            get { return Volatile.Read(ref outboundCount); }
         }
 
         /// <summary>Drain queued AUDI packets onto the WebSocket (call from timer / UI thread).</summary>
@@ -40,7 +47,7 @@ namespace BrowserServer
 
             byte[] packet;
             int sent = 0;
-            while (sent < 64 && Outbound.TryDequeue(out packet))
+            while (sent < 16 && Outbound.TryDequeue(out packet))
             {
                 Interlocked.Decrement(ref outboundCount);
                 try
@@ -110,8 +117,8 @@ namespace BrowserServer
                 WriteInt32(packet, 12, noOfFrames);
                 Buffer.BlockCopy(pcm, 0, packet, 16, pcm.Length);
 
-                // Bound memory if the client is slow.
-                while (Volatile.Read(ref outboundCount) > 80)
+                // Bound memory if the client is slow — keep ~250ms, never seconds of backlog.
+                while (Volatile.Read(ref outboundCount) > MaxOutboundPackets)
                 {
                     byte[] dropped;
                     if (Outbound.TryDequeue(out dropped))
