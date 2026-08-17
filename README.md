@@ -42,6 +42,7 @@ For now your phone and your server needs to be on the same network
 
 ### What's needed
 - [ ] HiDPI
+- [ ] Improve audio playback quality
 - [ ] Faster rendering (GPU?)
 - [ ] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
 - [ ] Configurable streaming quality (ondemand rendering?)
