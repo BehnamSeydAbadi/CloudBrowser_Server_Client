@@ -9,6 +9,8 @@ using Newtonsoft.Json;
 using System.Runtime.InteropServices;
 using Windows.UI.Input;
 using Windows.Foundation;
+using Windows.ApplicationModel.Core;
+using Windows.UI.Core;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.Storage.Streams;
 
@@ -25,6 +27,8 @@ namespace BrowserClient
         public readonly DownloadStore Downloads = new DownloadStore();
         public readonly ClientMediaCapture MediaCapture = new ClientMediaCapture();
         private readonly SemaphoreSlim sendGate = new SemaphoreSlim(1, 1);
+        private byte[] pendingFrame;
+        private int framePumpRunning;
 
         /// <summary>Raised on UI thread expectation — MainPage shows Allow/Deny.</summary>
         public event EventHandler<MediaPermissionPayload> MediaPermissionRequested;
@@ -110,15 +114,14 @@ namespace BrowserClient
                             }
                             else
                             {
+                                // Latest-frame-wins: never decode on the receive loop.
+                                // Queued JPEGs make scrolling feel a second behind and freeze WM10.
                                 var jpeg = new byte[total];
                                 System.Buffer.BlockCopy(readbuffer, 0, jpeg, 0, total);
-                                try
+                                Interlocked.Exchange(ref pendingFrame, jpeg);
+                                if (Interlocked.CompareExchange(ref framePumpRunning, 1, 0) == 0)
                                 {
-                                    var bitmap = await ConvertToBitmapImage(jpeg);
-                                    FrameRecived?.Invoke(this, bitmap);
-                                }
-                                catch
-                                {
+                                    var ignored = PumpPendingFramesAsync();
                                 }
                             }
                             break;
@@ -634,9 +637,44 @@ namespace BrowserClient
             await SendTextAsync(buffer);
         }
 
+        /// <summary>Decode only the newest JPEG; drop anything that arrived while we were busy.</summary>
+        private async Task PumpPendingFramesAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    var jpeg = Interlocked.Exchange(ref pendingFrame, null);
+                    if (jpeg == null || jpeg.Length == 0)
+                        break;
+
+                    try
+                    {
+                        var bitmap = await ConvertToBitmapImage(jpeg).ConfigureAwait(true);
+                        if (bitmap != null)
+                            FrameRecived?.Invoke(this, bitmap);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref framePumpRunning, 0);
+                if (Volatile.Read(ref pendingFrame) != null &&
+                    Interlocked.CompareExchange(ref framePumpRunning, 1, 0) == 0)
+                {
+                    var ignored = PumpPendingFramesAsync();
+                }
+            }
+        }
+
         public async Task<BitmapImage> ConvertToBitmapImage(byte[] image)
         {
-            BitmapImage bitmapimage = null;
+            if (image == null || image.Length == 0)
+                return null;
+
             using (InMemoryRandomAccessStream ms = new InMemoryRandomAccessStream())
             {
                 using (DataWriter writer = new DataWriter(ms.GetOutputStreamAt(0)))
@@ -645,10 +683,48 @@ namespace BrowserClient
                     await writer.StoreAsync();
                 }
                 ms.Seek(0);
-                bitmapimage = new BitmapImage();
-                bitmapimage.SetSource(ms);
+
+                var dispatcher = GetUiDispatcher();
+                if (dispatcher == null || dispatcher.HasThreadAccess)
+                {
+                    var bitmapimage = new BitmapImage();
+                    await bitmapimage.SetSourceAsync(ms);
+                    return bitmapimage;
+                }
+
+                BitmapImage created = null;
+                await dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                {
+                    created = new BitmapImage();
+                    created.SetSource(ms);
+                });
+                return created;
             }
-            return bitmapimage;
+        }
+
+        private static CoreDispatcher GetUiDispatcher()
+        {
+            try
+            {
+                var view = CoreApplication.MainView;
+                if (view != null && view.CoreWindow != null)
+                    return view.CoreWindow.Dispatcher;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var window = CoreWindow.GetForCurrentThread();
+                if (window != null)
+                    return window.Dispatcher;
+            }
+            catch
+            {
+            }
+
+            return null;
         }
     }
 }

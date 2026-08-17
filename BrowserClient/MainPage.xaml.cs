@@ -392,7 +392,17 @@ namespace BrowserClient
             ds.Downloads.ListChanged += Downloads_ListChanged;
             ds.FrameRecived += (s, o) =>
             {
-                test.Source = o;
+                if (o == null)
+                    return;
+                if (Dispatcher.HasThreadAccess)
+                {
+                    test.Source = o;
+                    return;
+                }
+                var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                {
+                    test.Source = o;
+                });
             };
             ds.StartRecive(endpoint);
             ds.MediaPermissionRequested += (s, payload) =>
