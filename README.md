@@ -40,17 +40,14 @@ For now your phone and your server needs to be on the same network
 - [X] Back/Forward
 - [X] File downloads (Till 200MB is funtional)
 - [X] Camera + QRCode scanning 
+- [X] Improve audio playback quality
+- [X] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
 
 ### What's needed
+- [ ] Notifications
 - [ ] Microphone
-- [ ] HiDPI
-- [ ] Improve audio playback quality
 - [ ] Faster rendering (GPU?)
-- [ ] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
-- [ ] Configurable streaming quality (ondemand rendering?)
 - [ ] File uploads
 - [ ] Large File downloads
-- [ ] Notifications
 - [ ] In Private/Incognito
 - [ ] General browser stuff
-- [ ] Continuum support/verify
