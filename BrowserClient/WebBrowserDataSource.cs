@@ -32,6 +32,8 @@ namespace BrowserClient
 
         /// <summary>Raised on UI thread expectation — MainPage shows Allow/Deny.</summary>
         public event EventHandler<MediaPermissionPayload> MediaPermissionRequested;
+        /// <summary>Raised when a site calls Notification.requestPermission().</summary>
+        public event EventHandler<NotificationPermissionPayload> NotificationPermissionRequested;
 
         public async void StartRecive(string addr)
         {
@@ -136,6 +138,7 @@ namespace BrowserClient
                                     audioPlayer.Stop();
                                 HandleDownloadTextPacket(packet);
                                 HandleMediaTextPacket(packet);
+                                HandleNotificationTextPacket(packet);
                                 TextPacketRecived?.Invoke(this, packet);
                             }
                             catch
@@ -172,6 +175,49 @@ namespace BrowserClient
                 catch
                 {
                 }
+            }
+        }
+
+        private void HandleNotificationTextPacket(TextPacket packet)
+        {
+            if (packet.text == null)
+                return;
+
+            try
+            {
+                if (packet.PType == TextPacketType.NotificationPermissionRequest)
+                {
+                    var payload = JsonConvert.DeserializeObject<NotificationPermissionPayload>(packet.text);
+                    if (payload != null)
+                        NotificationPermissionRequested?.Invoke(this, payload);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public async Task RespondNotificationPermissionAsync(NotificationPermissionPayload request, bool allowed)
+        {
+            if (request == null || string.IsNullOrEmpty(request.requestId))
+                return;
+
+            try
+            {
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.NotificationPermissionResponse,
+                    JSONData = JsonConvert.SerializeObject(new NotificationPermissionPayload
+                    {
+                        requestId = request.requestId,
+                        origin = request.origin,
+                        allowed = allowed
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
             }
         }
 

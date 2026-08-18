@@ -42,9 +42,9 @@ For now your phone and your server needs to be on the same network
 - [X] Camera + QRCode scanning 
 - [X] Improve audio playback quality
 - [X] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
+- [X] Notifications (web Notification API → native phone toast)
 
 ### What's needed
-- [ ] Notifications
 - [ ] Microphone
 - [ ] Faster rendering (GPU?)
 - [ ] File uploads

@@ -412,6 +412,13 @@ namespace BrowserClient
                     var dialogIgnored = ShowMediaPermissionDialogAsync(payload);
                 });
             };
+            ds.NotificationPermissionRequested += (s, payload) =>
+            {
+                var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                {
+                    var dialogIgnored = ShowNotificationPermissionDialogAsync(payload);
+                });
+            };
             ds.TextPacketRecived += (s, o) =>
             {
                 var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
@@ -464,9 +471,46 @@ namespace BrowserClient
                         case TextPacketType.QrDetected:
                             var qrIgnored = HandleQrDetectedAsync(o.text);
                             break;
+
+                        case TextPacketType.Notification:
+                            HandleServerNotification(o.text);
+                            break;
                     }
                 });
             };
+        }
+
+        private void HandleServerNotification(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return;
+
+            try
+            {
+                var payload = JsonConvert.DeserializeObject<NotificationPayload>(json);
+                if (payload == null)
+                    return;
+
+                // Always show an in-app banner — OS toasts are easy to miss while the app is focused
+                // (especially on Windows Mobile, where banners may only land in Action Center).
+                var title = (payload.title ?? "").Trim();
+                var body = (payload.body ?? "").Trim();
+                string banner;
+                if (!string.IsNullOrEmpty(title) && !string.IsNullOrEmpty(body))
+                    banner = title + ": " + body;
+                else
+                    banner = !string.IsNullOrEmpty(title) ? title : body;
+                if (banner.Length > 64)
+                    banner = banner.Substring(0, 61) + "…";
+                if (!string.IsNullOrEmpty(banner))
+                    ShowDownloadToast(banner);
+
+                NativeNotification.Show(payload);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Notification parse failed: " + ex.Message);
+            }
         }
 
         private async Task HandleQrDetectedAsync(string text)
@@ -648,6 +692,35 @@ namespace BrowserClient
                 ds.MediaCapture.PreviewElement = MediaPreviewSink;
 
             await ds.RespondMediaPermissionAsync(payload, allowed);
+        }
+
+        private async Task ShowNotificationPermissionDialogAsync(NotificationPermissionPayload payload)
+        {
+            if (payload == null || ds == null)
+                return;
+
+            var origin = string.IsNullOrWhiteSpace(payload.origin) ? "This site" : payload.origin;
+
+            var dialog = new ContentDialog
+            {
+                Title = "Allow notifications?",
+                Content = origin + " wants to show notifications.",
+                PrimaryButtonText = "Allow",
+                SecondaryButtonText = "Deny"
+            };
+
+            var allowed = false;
+            try
+            {
+                var result = await dialog.ShowAsync();
+                allowed = result == ContentDialogResult.Primary;
+            }
+            catch
+            {
+                allowed = false;
+            }
+
+            await ds.RespondNotificationPermissionAsync(payload, allowed);
         }
 
         private async void About_Click(object sender, RoutedEventArgs e)

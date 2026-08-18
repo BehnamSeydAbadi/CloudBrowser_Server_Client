@@ -74,6 +74,17 @@ namespace BrowserServer
                         }
                         break;
 
+                    case PacketType.NotificationPermissionResponse:
+                        try
+                        {
+                            var notify = JsonConvert.DeserializeObject<NotificationPermissionPayload>(packet.JSONData ?? "");
+                            NotificationBridge.HandlePermissionResponse(notify);
+                        }
+                        catch
+                        {
+                        }
+                        break;
+
                     case PacketType.TextInputSend:
                         Console.WriteLine(packet.JSONData);
                         var textscript = @"(function (){document.activeElement.value='" + packet.JSONData + "'})();";
@@ -353,6 +364,7 @@ namespace BrowserServer
             Console.WriteLine("Video playback: H.264/AAC ENABLED (CefSharp.H264.x64 133) — page video streams like audio");
             Console.WriteLine("Phone camera/mic: ENABLED (sites calling getUserMedia prompt on the client)");
             Console.WriteLine("QR decode: ENABLED (while camera is on, HTTP(S) codes open automatically)");
+            Console.WriteLine("Notifications: ENABLED (page Notification API → phone toast)");
             Console.WriteLine("Page stream: adaptive (~30fps motion, sharp stills, skip unchanged)");
             Console.WriteLine("Or click the Discovery button in the UWP app to autimatically find the server on your local network");
             Console.WriteLine();

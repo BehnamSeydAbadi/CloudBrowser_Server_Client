@@ -96,6 +96,7 @@ namespace BrowserServer
             browser.AudioHandler = new StreamingAudioHandler(id);
             browser.DownloadHandler = new StreamingDownloadHandler(id);
             MediaBridge.AttachToBrowser(browser, id);
+            NotificationBridge.AttachToBrowser(browser, id);
             MobileChromeIdentity.Apply(browser);
             if (CreateRenderHandler != null)
                 browser.RenderHandler = CreateRenderHandler(browser, id);
@@ -127,6 +128,7 @@ namespace BrowserServer
                     Console.WriteLine("Loaded: " + e.Url);
                 // Inject into iframes too — many camera testers host getUserMedia off-main-frame.
                 MediaBridge.InjectShim(e.Frame);
+                NotificationBridge.InjectShim(e.Frame);
                 if (e.Frame.IsMain)
                     VideoPlaybackBridge.Poll(browser);
             };
@@ -134,7 +136,10 @@ namespace BrowserServer
             browser.FrameLoadStart += (s, e) =>
             {
                 if (e.Frame != null && e.Frame.IsValid)
+                {
                     MediaBridge.InjectShim(e.Frame);
+                    NotificationBridge.InjectShim(e.Frame);
+                }
             };
 
             Tabs[id] = session;
@@ -367,7 +372,21 @@ namespace BrowserServer
                 BroadcastNavigatedUrl(session.Url);
 
             if (!e.IsLoading)
+            {
                 Console.WriteLine("Navigation finished: " + session.Url);
+                try
+                {
+                    var main = session.Browser?.GetMainFrame();
+                    if (main != null && main.IsValid)
+                    {
+                        MediaBridge.InjectShim(main);
+                        NotificationBridge.InjectShim(main);
+                    }
+                }
+                catch
+                {
+                }
+            }
         }
 
         private static void OnAddressChanged(TabSession session, AddressChangedEventArgs e)

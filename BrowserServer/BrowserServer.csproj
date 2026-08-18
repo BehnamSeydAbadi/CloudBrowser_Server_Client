@@ -119,6 +119,7 @@
   <ItemGroup>
     <Compile Include="BrowserHandlers.cs" />
     <Compile Include="MediaBridge.cs" />
+    <Compile Include="NotificationBridge.cs" />
     <Compile Include="MediaSchemeHandler.cs" />
     <Compile Include="QrScanService.cs" />
     <Compile Include="StreamingAudioHandler.cs" />

@@ -42,7 +42,11 @@ namespace BrowserServer
         /// <summary>Already capturing — add mic/camera without a new prompt.</summary>
         MediaCaptureUpgrade,
         /// <summary>QR payload decoded from the phone camera (plain text).</summary>
-        QrDetected
+        QrDetected,
+        /// <summary>Site Notification API — JSON NotificationPayload.</summary>
+        Notification,
+        /// <summary>Site wants notification permission — JSON NotificationPermissionPayload.</summary>
+        NotificationPermissionRequest
     }
 
     public enum PacketType
@@ -64,7 +68,9 @@ namespace BrowserServer
         /// <summary>Client ACK for a received FILE chunk (JSON: id, seq).</summary>
         DownloadAck,
         /// <summary>Phone Allow/Deny for MediaPermissionRequest.</summary>
-        MediaPermissionResponse
+        MediaPermissionResponse,
+        /// <summary>Phone Allow/Deny for NotificationPermissionRequest.</summary>
+        NotificationPermissionResponse
     }
 
     public class MediaPermissionPayload
@@ -105,6 +111,23 @@ namespace BrowserServer
     {
         public string id;
         public int seq;
+    }
+
+    public class NotificationPayload
+    {
+        public string title;
+        public string body;
+        public string tag;
+        public string origin;
+        public string icon;
+        public string url;
+    }
+
+    public class NotificationPermissionPayload
+    {
+        public string requestId;
+        public string origin;
+        public bool allowed;
     }
 
     public struct DiscoveryPacket
