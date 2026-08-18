@@ -363,10 +363,10 @@ namespace BrowserServer
             return true;
         }
 
-        protected override void OnBeforeDownload(IWebBrowser chromiumWebBrowser, IBrowser browser, DownloadItem downloadItem, IBeforeDownloadCallback callback)
+        protected override bool OnBeforeDownload(IWebBrowser chromiumWebBrowser, IBrowser browser, DownloadItem downloadItem, IBeforeDownloadCallback callback)
         {
             if (callback.IsDisposed)
-                return;
+                return false;
 
             var fileName = SanitizeFileName(downloadItem.SuggestedFileName);
             if (string.IsNullOrWhiteSpace(fileName))
@@ -402,6 +402,7 @@ namespace BrowserServer
             {
                 callback.Continue(tempPath, showDialog: false);
             }
+            return true;
         }
 
         protected override void OnDownloadUpdated(IWebBrowser chromiumWebBrowser, IBrowser browser, DownloadItem downloadItem, IDownloadItemCallback callback)

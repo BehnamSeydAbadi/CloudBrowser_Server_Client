@@ -1,8 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.props" Condition="Exists('..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.props')" />
-  <Import Project="..\packages\cef.redist.x86.113.1.4\build\cef.redist.x86.props" Condition="Exists('..\packages\cef.redist.x86.113.1.4\build\cef.redist.x86.props')" />
-  <Import Project="..\packages\cef.redist.x64.113.1.4\build\cef.redist.x64.props" Condition="Exists('..\packages\cef.redist.x64.113.1.4\build\cef.redist.x64.props')" />
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -20,6 +17,10 @@
     <!-- CefSharp requires an explicit x86/x64 platform (not AnyCPU). -->
     <CefSharpAnyCpuSupport>false</CefSharpAnyCpuSupport>
     <PlatformTarget>x64</PlatformTarget>
+    <H264PackageDir>$(MSBuildThisFileDirectory)..\packages\CefSharp.H264.x64.133.4.2</H264PackageDir>
+    <H264Archive>$(H264PackageDir)\doc\cef.x64.7z</H264Archive>
+    <H264ExtractDir>$(H264PackageDir)\cef</H264ExtractDir>
+    <H264CefDir>$(H264PackageDir)\cef\cef</H264CefDir>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
     <PlatformTarget>x64</PlatformTarget>
@@ -67,14 +68,21 @@
     <CefSharpPlatformTargetOverride>x64</CefSharpPlatformTargetOverride>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="CefSharp, Version=113.1.40.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
-      <HintPath>..\packages\CefSharp.Common.113.1.40\lib\net452\CefSharp.dll</HintPath>
+    <Reference Include="CefSharp, Version=133.4.21.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
+      <HintPath>..\packages\CefSharp.H264.x64.133.4.2\cef\cef\CefSharp.dll</HintPath>
+      <Private>True</Private>
     </Reference>
-    <Reference Include="CefSharp.Core, Version=113.1.40.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
-      <HintPath>..\packages\CefSharp.Common.113.1.40\lib\net452\CefSharp.Core.dll</HintPath>
+    <Reference Include="CefSharp.Core, Version=133.4.21.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
+      <HintPath>..\packages\CefSharp.H264.x64.133.4.2\cef\cef\CefSharp.Core.dll</HintPath>
+      <Private>True</Private>
     </Reference>
-    <Reference Include="CefSharp.OffScreen, Version=113.1.40.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
-      <HintPath>..\packages\CefSharp.OffScreen.113.1.40\lib\net462\CefSharp.OffScreen.dll</HintPath>
+    <Reference Include="CefSharp.Core.Runtime, Version=133.4.21.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=AMD64">
+      <HintPath>..\packages\CefSharp.H264.x64.133.4.2\cef\cef\CefSharp.Core.Runtime.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="CefSharp.OffScreen, Version=133.4.21.0, Culture=neutral, PublicKeyToken=40c4b6fc221f4138, processorArchitecture=MSIL">
+      <HintPath>..\packages\CefSharp.H264.x64.133.4.2\cef\cef\CefSharp.OffScreen.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="Microsoft.Bcl.AsyncInterfaces, Version=5.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
       <HintPath>..\packages\Microsoft.Bcl.AsyncInterfaces.5.0.0\lib\net461\Microsoft.Bcl.AsyncInterfaces.dll</HintPath>
@@ -122,6 +130,7 @@
     <Compile Include="Packets.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="TabManager.cs" />
+    <Compile Include="VideoPlaybackBridge.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -129,18 +138,19 @@
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+  <Target Name="ExtractCefSharpH264" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(H264Archive)')" Text="CefSharp.H264.x64 133.4.2 is missing. Restore NuGet packages so packages\CefSharp.H264.x64.133.4.2\doc\cef.x64.7z exists." />
     <PropertyGroup>
-      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+      <SevenZipExe Condition="Exists('C:\Program Files\7-Zip\7z.exe')">C:\Program Files\7-Zip\7z.exe</SevenZipExe>
+      <SevenZipExe Condition="'$(SevenZipExe)' == '' And Exists('C:\Program Files (x86)\7-Zip\7z.exe')">C:\Program Files (x86)\7-Zip\7z.exe</SevenZipExe>
     </PropertyGroup>
-    <Error Condition="!Exists('..\packages\cef.redist.x64.113.1.4\build\cef.redist.x64.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\cef.redist.x64.113.1.4\build\cef.redist.x64.props'))" />
-    <Error Condition="!Exists('..\packages\cef.redist.x86.113.1.4\build\cef.redist.x86.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\cef.redist.x86.113.1.4\build\cef.redist.x86.props'))" />
-    <Error Condition="!Exists('..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.props'))" />
-    <Error Condition="!Exists('..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets'))" />
+    <Error Condition="!Exists('$(H264CefDir)\libcef.dll') And '$(SevenZipExe)' == ''" Text="7-Zip is required once to extract CefSharp.H264.x64 (cef.x64.7z)." />
+    <Exec Condition="!Exists('$(H264CefDir)\libcef.dll')" Command="&quot;$(SevenZipExe)&quot; x &quot;$(H264Archive)&quot; -o&quot;$(H264ExtractDir)&quot; -y" />
   </Target>
-  <Import Project="..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets" Condition="Exists('..\packages\CefSharp.Common.113.1.40\build\CefSharp.Common.targets')" />
-  <!-- Guarantee CEF native files (libcef.dll etc.) land next to the exe. -->
-  <Target Name="CopyCefRedistAfterBuild" AfterTargets="Build">
-    <CallTarget Targets="CefRedist64CopyResources" Condition="'$(PlatformTarget)' == 'x64' Or '$(CefSharpPlatformTargetOverride)' == 'x64'" />
+  <Target Name="CopyCefSharpH264" AfterTargets="Build">
+    <ItemGroup>
+      <H264RuntimeFiles Include="$(H264CefDir)\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(H264RuntimeFiles)" DestinationFiles="@(H264RuntimeFiles->'$(OutputPath)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 </Project>

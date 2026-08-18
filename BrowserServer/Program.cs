@@ -303,9 +303,12 @@ namespace BrowserServer
             TabManager.CreateRenderHandler = (browser, tabId) => new TestRHI(browser, tabId);
 
             const string testUrl = "https://www.google.com/";
+            var cefRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp133");
             var settings = new CefSettings()
             {
-                CachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp\\Cache"),
+                RootCachePath = cefRoot,
+                CachePath = Path.Combine(cefRoot, "Cache"),
+                BrowserSubprocessPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "CefSharp.BrowserSubprocess.exe"),
                 // Real Android Google Chrome UA (Chrome still includes AppleWebKit tokens by design).
                 UserAgent = MobileChromeIdentity.UserAgent,
                 AcceptLanguageList = "en-US,en",
@@ -315,12 +318,13 @@ namespace BrowserServer
             // Disable GPU in offscreen — reduces crashes on heavy sites (maps, modern SPAs).
             settings.CefCommandLineArgs["disable-gpu"] = "1";
             settings.CefCommandLineArgs["disable-gpu-compositing"] = "1";
-            // Allow media autoplay so remote audio can start without a desktop gesture.
+            // Allow media autoplay so remote audio/video can start without a desktop gesture.
             settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
             // OffScreen CefSettings adds "mute-audio" by default; without this, AudioHandler never fires.
             settings.EnableAudio();
             if (settings.CefCommandLineArgs.ContainsKey("mute-audio"))
                 settings.CefCommandLineArgs.Remove("mute-audio");
+            CefSharpSettings.ConcurrentTaskExecution = true;
 
             // Phone camera/mic bridge — fetchable from https pages (treated as secure).
             settings.RegisterScheme(new CefCustomScheme
@@ -346,6 +350,7 @@ namespace BrowserServer
             Console.Clear();
             Console.WriteLine("Browser server is now running, you can connect to it via ws://" + NetworkManager.GetLocalIPAddress() + ":8081");
             Console.WriteLine("Audio capture: ENABLED (expect 'Audio start' when a page plays sound)");
+            Console.WriteLine("Video playback: H.264/AAC ENABLED (CefSharp.H264.x64 133) — page video streams like audio");
             Console.WriteLine("Phone camera/mic: ENABLED (sites calling getUserMedia prompt on the client)");
             Console.WriteLine("QR decode: ENABLED (while camera is on, HTTP(S) codes open automatically)");
             Console.WriteLine("Page stream: adaptive (~30fps motion, sharp stills, skip unchanged)");
@@ -380,6 +385,7 @@ namespace BrowserServer
         static int captureInFlight = 0;
         static int captureStartedTick = 0;
         static int lastMediaAwareFrameTick = 0;
+        static int lastVideoPageTick = 0;
         static int lastFrameHash;
         static bool hasLastHash;
         static int lastSendTick;
@@ -417,7 +423,10 @@ namespace BrowserServer
                 if (StreamingAudioHandler.PendingCount > 12)
                     return;
 
+                VideoPlaybackBridge.Poll(browser);
+
                 bool mediaOn = MediaBridge.IsCaptureActive;
+                bool videoOn = VideoPlaybackBridge.IsStreaming;
                 // Keep a slow page stream while camera is on (so QR UI still updates), but
                 // leave most of the WS for CAM uplink — full 20fps + CAM freezes WM10.
                 var now = Environment.TickCount;
@@ -426,6 +435,13 @@ namespace BrowserServer
                     if (now - lastMediaAwareFrameTick < 400)
                         return;
                     lastMediaAwareFrameTick = now;
+                }
+                else if (videoOn)
+                {
+                    // OnPaint already sends video frames; only a slow UI keepalive here.
+                    if (now - lastVideoPageTick < 750)
+                        return;
+                    lastVideoPageTick = now;
                 }
 
                 // Recover if a previous capture never finished (used to cause permanent black screen).
@@ -582,7 +598,7 @@ namespace BrowserServer
                         return;
                     }
 
-                    var entries = await CefSharp.AsyncExtensions.GetNavigationEntriesAsync(host, currentOnly: false);
+                    var entries = await host.GetNavigationEntriesAsync(false);
                     if (entries == null || entries.Count == 0)
                     {
                         BroadcastAtHistoryRoot();
@@ -673,6 +689,13 @@ namespace BrowserServer
             {
                 this.browser = browser;
                 this.tabId = tabId;
+            }
+
+            public override void OnPaint(PaintElementType type, Rect dirtyRect, IntPtr buffer, int width, int height)
+            {
+                base.OnPaint(type, dirtyRect, buffer, width, height);
+                if (TabManager.ActiveTabId == tabId)
+                    VideoPlaybackBridge.HandlePaint(type, buffer, width, height);
             }
 
             public override void OnVirtualKeyboardRequested(IBrowser browser, TextInputMode inputMode)

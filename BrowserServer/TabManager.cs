@@ -127,6 +127,8 @@ namespace BrowserServer
                     Console.WriteLine("Loaded: " + e.Url);
                 // Inject into iframes too — many camera testers host getUserMedia off-main-frame.
                 MediaBridge.InjectShim(e.Frame);
+                if (e.Frame.IsMain)
+                    VideoPlaybackBridge.Poll(browser);
             };
 
             browser.FrameLoadStart += (s, e) =>

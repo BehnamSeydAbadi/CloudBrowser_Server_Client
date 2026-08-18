@@ -11,7 +11,7 @@ namespace BrowserServer
     public static class MobileChromeIdentity
     {
         public const string UserAgent =
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.5672.63 Mobile Safari/537.36";
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.127 Mobile Safari/537.36";
 
         public static void Apply(ChromiumWebBrowser browser)
         {
