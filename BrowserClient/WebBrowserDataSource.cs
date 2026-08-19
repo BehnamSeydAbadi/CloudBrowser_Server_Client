@@ -34,6 +34,8 @@ namespace BrowserClient
         public event EventHandler<MediaPermissionPayload> MediaPermissionRequested;
         /// <summary>Raised when a site calls Notification.requestPermission().</summary>
         public event EventHandler<NotificationPermissionPayload> NotificationPermissionRequested;
+        /// <summary>Pinned Start-tile URLs to treat as installed PWAs (sent right after connect).</summary>
+        public Func<Task<List<string>>> ProvidePwaUrls;
 
         public async void StartRecive(string addr)
         {
@@ -53,6 +55,7 @@ namespace BrowserClient
             {
                 await sock.ConnectAsync(new Uri(addr), CancellationToken.None);
                 await Downloads.EnsureLoadedAsync();
+                await SendPwaInstalledAsync(false);
 
                 // Typical messages are << 1MB; grow on demand for rare large frames.
                 var readbuffer = new byte[512 * 1024];
@@ -407,6 +410,51 @@ namespace BrowserClient
             finally
             {
                 sendGate.Release();
+            }
+        }
+
+        public async Task SendPwaInstalledAsync(bool reload)
+        {
+            List<string> urls = null;
+            try
+            {
+                if (ProvidePwaUrls != null)
+                    urls = await ProvidePwaUrls();
+            }
+            catch
+            {
+            }
+
+            await SendPwaInstalledAsync(urls, reload);
+        }
+
+        public async Task SendPwaInstalledAsync(IEnumerable<string> urls, bool reload)
+        {
+            try
+            {
+                var list = new List<string>();
+                if (urls != null)
+                {
+                    foreach (var url in urls)
+                    {
+                        if (!string.IsNullOrWhiteSpace(url))
+                            list.Add(url.Trim());
+                    }
+                }
+
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.PwaInstalled,
+                    JSONData = JsonConvert.SerializeObject(new PwaInstallPayload
+                    {
+                        urls = list,
+                        reload = reload
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
             }
         }
 

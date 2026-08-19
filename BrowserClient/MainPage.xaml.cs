@@ -582,6 +582,7 @@ namespace BrowserClient
 
             ds = new WebBrowserDataSource();
             ds.Downloads.ListChanged += Downloads_ListChanged;
+            ds.ProvidePwaUrls = GetPinnedHomeUrlsAsync;
             ds.FrameRecived += (s, o) =>
             {
                 if (o == null)
@@ -1088,10 +1089,19 @@ namespace BrowserClient
 
             try
             {
+                bool pinned;
                 if (SecondaryTile.Exists(pinTileId))
+                {
                     await tile.UpdateAsync();
+                    pinned = true;
+                }
                 else
-                    await tile.RequestCreateAsync();
+                {
+                    pinned = await tile.RequestCreateAsync();
+                }
+
+                if (pinned && ds != null)
+                    await ds.SendPwaInstalledAsync(true);
             }
             catch (Exception ex)
             {
@@ -1099,6 +1109,34 @@ namespace BrowserClient
             }
 
             ClosePinToHome();
+        }
+
+        private async Task<List<string>> GetPinnedHomeUrlsAsync()
+        {
+            var urls = new List<string>();
+            if (!string.IsNullOrWhiteSpace(pendingNavigateUrl))
+                urls.Add(pendingNavigateUrl.Trim());
+            if (!string.IsNullOrWhiteSpace(pinPageUrl))
+                urls.Add(pinPageUrl.Trim());
+
+            try
+            {
+                var tiles = await SecondaryTile.FindAllAsync();
+                if (tiles != null)
+                {
+                    foreach (var tile in tiles)
+                    {
+                        if (tile != null && !string.IsNullOrWhiteSpace(tile.Arguments))
+                            urls.Add(tile.Arguments.Trim());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("List pinned tiles failed: " + ex.Message);
+            }
+
+            return urls;
         }
 
         private static async Task<Uri> SaveImageAsTileLogoAsync(StorageFile source, string tileId)

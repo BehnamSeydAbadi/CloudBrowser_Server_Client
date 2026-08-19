@@ -70,7 +70,9 @@ namespace BrowserServer
         /// <summary>Phone Allow/Deny for MediaPermissionRequest.</summary>
         MediaPermissionResponse,
         /// <summary>Phone Allow/Deny for NotificationPermissionRequest.</summary>
-        NotificationPermissionResponse
+        NotificationPermissionResponse,
+        /// <summary>Origins pinned via Add to Home — treat as installed PWAs.</summary>
+        PwaInstalled
     }
 
     public class MediaPermissionPayload
@@ -128,6 +130,12 @@ namespace BrowserServer
         public string requestId;
         public string origin;
         public bool allowed;
+    }
+
+    public class PwaInstallPayload
+    {
+        public List<string> urls;
+        public bool reload;
     }
 
     public struct DiscoveryPacket

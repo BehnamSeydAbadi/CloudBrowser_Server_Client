@@ -129,6 +129,7 @@ namespace BrowserServer
                 // Inject into iframes too — many camera testers host getUserMedia off-main-frame.
                 MediaBridge.InjectShim(e.Frame);
                 NotificationBridge.InjectShim(e.Frame);
+                PwaBridge.InjectShim(e.Frame);
                 if (e.Frame.IsMain)
                     VideoPlaybackBridge.Poll(browser);
             };
@@ -139,6 +140,7 @@ namespace BrowserServer
                 {
                     MediaBridge.InjectShim(e.Frame);
                     NotificationBridge.InjectShim(e.Frame);
+                    PwaBridge.InjectShim(e.Frame);
                 }
             };
 
@@ -381,6 +383,7 @@ namespace BrowserServer
                     {
                         MediaBridge.InjectShim(main);
                         NotificationBridge.InjectShim(main);
+                        PwaBridge.InjectShim(main);
                     }
                 }
                 catch
