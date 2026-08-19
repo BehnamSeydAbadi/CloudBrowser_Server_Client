@@ -11,13 +11,16 @@ using Windows.Foundation;
 using Windows.Foundation.Metadata;
 using Windows.Graphics.Display;
 using Windows.Networking.Sockets;
+using Windows.Graphics.Imaging;
 using Windows.Storage;
+using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
 using Windows.UI.Core;
 using Windows.UI.StartScreen;
 using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Navigation;
 using Newtonsoft.Json;
 
@@ -46,6 +49,10 @@ namespace BrowserClient
         private int downloadToastGeneration;
         private bool suppressUrlSuggest;
         private int urlSuggestHideGeneration;
+        private string pinPageUrl;
+        private string pinTileId;
+        private Uri pinLogoUri;
+        private int pinIconGeneration;
 
         public string broadcastAddress = "255.255.255.255";
         Timer UdpDiscoveryTimer;
@@ -134,6 +141,12 @@ namespace BrowserClient
         /// </summary>
         private bool TryHandleBack()
         {
+            if (PinToHomeOverlay.Visibility == Visibility.Visible)
+            {
+                ClosePinToHome();
+                return true;
+            }
+
             if (TabsOverlay.Visibility == Visibility.Visible)
             {
                 TabsOverlay.Visibility = Visibility.Collapsed;
@@ -267,6 +280,7 @@ namespace BrowserClient
                 DownloadsOverlay.Visibility = Visibility.Collapsed;
                 HistoryOverlay.Visibility = Visibility.Collapsed;
                 BookmarksOverlay.Visibility = Visibility.Collapsed;
+                PinToHomeOverlay.Visibility = Visibility.Collapsed;
                 HideUrlSuggestions();
             }
         }
@@ -837,6 +851,7 @@ namespace BrowserClient
             TabsOverlay.Visibility = Visibility.Collapsed;
             HistoryOverlay.Visibility = Visibility.Collapsed;
             BookmarksOverlay.Visibility = Visibility.Collapsed;
+            PinToHomeOverlay.Visibility = Visibility.Collapsed;
             HideUrlSuggestions();
             DownloadsOverlay.Visibility = Visibility.Visible;
             RefreshDownloadsUi();
@@ -932,6 +947,8 @@ namespace BrowserClient
 
         private async void AddToHome_Click(object sender, RoutedEventArgs e)
         {
+            MoreButton.Flyout?.Hide();
+
             var url = (urlField.Text ?? "").Trim();
             if (string.IsNullOrEmpty(url) || url.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
                 return;
@@ -942,16 +959,123 @@ namespace BrowserClient
                 url = "https://" + url;
             }
 
-            var displayName = string.IsNullOrWhiteSpace(activeTabTitle) ? "Pinned site" : activeTabTitle;
-            if (displayName.Length > 50)
-                displayName = displayName.Substring(0, 50);
+            var displayName = string.IsNullOrWhiteSpace(activeTabTitle) ? "Pinned site" : activeTabTitle.Trim();
+            if (string.Equals(displayName, "New Tab", StringComparison.OrdinalIgnoreCase))
+            {
+                var host = HistoryStore.HostLabel(url);
+                displayName = string.IsNullOrWhiteSpace(host) ? "Pinned site" : host;
+            }
+            if (displayName.Length > 64)
+                displayName = displayName.Substring(0, 64);
 
-            var tileId = "pin_" + StableHash(url);
-            var fallbackLogo = new Uri("ms-appx:///Assets/Square150x150Logo.png");
-            var logo = await TryDownloadFaviconLogoAsync(url, tileId) ?? fallbackLogo;
+            pinPageUrl = url;
+            pinTileId = "pin_" + StableHash(url);
+            pinLogoUri = new Uri("ms-appx:///Assets/Square150x150Logo.png");
+            var iconGeneration = ++pinIconGeneration;
 
+            HideUrlSuggestions();
+            TabsOverlay.Visibility = Visibility.Collapsed;
+            HistoryOverlay.Visibility = Visibility.Collapsed;
+            BookmarksOverlay.Visibility = Visibility.Collapsed;
+            DownloadsOverlay.Visibility = Visibility.Collapsed;
+
+            PinTitleBox.Text = displayName;
+            SetPinIconPreview(pinLogoUri);
+            PinToHomeOverlay.Visibility = Visibility.Visible;
+
+            var favicon = await TryDownloadFaviconLogoAsync(url, pinTileId);
+            if (favicon != null &&
+                iconGeneration == pinIconGeneration &&
+                PinToHomeOverlay.Visibility == Visibility.Visible)
+            {
+                pinLogoUri = favicon;
+                SetPinIconPreview(pinLogoUri);
+            }
+        }
+
+        private void ClosePinToHome_Click(object sender, RoutedEventArgs e)
+        {
+            ClosePinToHome();
+        }
+
+        private void ClosePinToHome()
+        {
+            pinIconGeneration++;
+            if (PinToHomeOverlay != null)
+                PinToHomeOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void SetPinIconPreview(Uri uri)
+        {
+            if (PinIconPreview == null || uri == null)
+                return;
+
+            try
+            {
+                var image = new BitmapImage();
+                image.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+                image.UriSource = uri;
+                PinIconPreview.Source = image;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Pin icon preview failed: " + ex.Message);
+            }
+        }
+
+        private async void PinChangeIcon_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(pinTileId))
+                return;
+
+            var picker = new FileOpenPicker();
+            picker.ViewMode = PickerViewMode.Thumbnail;
+            picker.SuggestedStartLocation = PickerLocationId.PicturesLibrary;
+            picker.FileTypeFilter.Add(".png");
+            picker.FileTypeFilter.Add(".jpg");
+            picker.FileTypeFilter.Add(".jpeg");
+            picker.FileTypeFilter.Add(".gif");
+            picker.FileTypeFilter.Add(".bmp");
+            picker.FileTypeFilter.Add(".ico");
+
+            StorageFile file;
+            try
+            {
+                file = await picker.PickSingleFileAsync();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Icon picker failed: " + ex.Message);
+                return;
+            }
+
+            if (file == null)
+                return;
+
+            var logo = await SaveImageAsTileLogoAsync(file, pinTileId);
+            if (logo == null)
+                return;
+
+            pinIconGeneration++;
+            pinLogoUri = logo;
+            SetPinIconPreview(pinLogoUri);
+        }
+
+        private async void ConfirmPinToHome_Click(object sender, RoutedEventArgs e)
+        {
+            var url = pinPageUrl;
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrEmpty(pinTileId))
+                return;
+
+            var displayName = PinTitleBox != null ? (PinTitleBox.Text ?? "").Trim() : "";
+            if (string.IsNullOrEmpty(displayName))
+                displayName = string.IsNullOrWhiteSpace(activeTabTitle) ? "Pinned site" : activeTabTitle.Trim();
+            if (displayName.Length > 64)
+                displayName = displayName.Substring(0, 64);
+
+            var logo = pinLogoUri ?? new Uri("ms-appx:///Assets/Square150x150Logo.png");
             var tile = new SecondaryTile(
-                tileId,
+                pinTileId,
                 displayName,
                 url,
                 logo,
@@ -964,7 +1088,7 @@ namespace BrowserClient
 
             try
             {
-                if (SecondaryTile.Exists(tileId))
+                if (SecondaryTile.Exists(pinTileId))
                     await tile.UpdateAsync();
                 else
                     await tile.RequestCreateAsync();
@@ -972,6 +1096,71 @@ namespace BrowserClient
             catch (Exception ex)
             {
                 Debug.WriteLine("Add to Home failed: " + ex.Message);
+            }
+
+            ClosePinToHome();
+        }
+
+        private static async Task<Uri> SaveImageAsTileLogoAsync(StorageFile source, string tileId)
+        {
+            if (source == null || string.IsNullOrEmpty(tileId))
+                return null;
+
+            try
+            {
+                var folder = await ApplicationData.Current.LocalFolder.CreateFolderAsync(
+                    "PinnedIcons",
+                    CreationCollisionOption.OpenIfExists);
+                var dest = await folder.CreateFileAsync(tileId + ".png", CreationCollisionOption.ReplaceExisting);
+
+                using (var inStream = await source.OpenReadAsync())
+                using (var outStream = await dest.OpenAsync(FileAccessMode.ReadWrite))
+                {
+                    outStream.Size = 0;
+                    var decoder = await BitmapDecoder.CreateAsync(inStream);
+                    var bitmap = await decoder.GetSoftwareBitmapAsync();
+                    if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8 ||
+                        bitmap.BitmapAlphaMode != BitmapAlphaMode.Premultiplied)
+                    {
+                        bitmap = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+                    }
+
+                    var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, outStream);
+                    encoder.SetSoftwareBitmap(bitmap);
+                    encoder.BitmapTransform.ScaledWidth = 150;
+                    encoder.BitmapTransform.ScaledHeight = 150;
+                    encoder.BitmapTransform.InterpolationMode = BitmapInterpolationMode.Fant;
+                    await encoder.FlushAsync();
+                }
+
+                return new Uri("ms-appdata:///local/PinnedIcons/" + tileId + ".png");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Save tile logo failed: " + ex.Message);
+            }
+
+            try
+            {
+                var ext = source.FileType;
+                if (string.IsNullOrEmpty(ext))
+                    ext = ".png";
+                ext = ext.ToLowerInvariant();
+                if (ext != ".png" && ext != ".jpg" && ext != ".jpeg")
+                    return null;
+
+                var folder = await ApplicationData.Current.LocalFolder.CreateFolderAsync(
+                    "PinnedIcons",
+                    CreationCollisionOption.OpenIfExists);
+                var fileName = tileId + (ext == ".jpeg" ? ".jpg" : ext);
+                var dest = await folder.CreateFileAsync(fileName, CreationCollisionOption.ReplaceExisting);
+                await source.CopyAndReplaceAsync(dest);
+                return new Uri("ms-appdata:///local/PinnedIcons/" + fileName);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Copy tile logo failed: " + ex.Message);
+                return null;
             }
         }
 
@@ -1175,6 +1364,7 @@ namespace BrowserClient
             DownloadsOverlay.Visibility = Visibility.Collapsed;
             HistoryOverlay.Visibility = Visibility.Collapsed;
             BookmarksOverlay.Visibility = Visibility.Collapsed;
+            PinToHomeOverlay.Visibility = Visibility.Collapsed;
             TabsOverlay.Visibility = Visibility.Visible;
         }
 
@@ -1222,6 +1412,7 @@ namespace BrowserClient
             TabsOverlay.Visibility = Visibility.Collapsed;
             HistoryOverlay.Visibility = Visibility.Collapsed;
             BookmarksOverlay.Visibility = Visibility.Collapsed;
+            PinToHomeOverlay.Visibility = Visibility.Collapsed;
             HideUrlSuggestions();
             DownloadsOverlay.Visibility = Visibility.Visible;
             RefreshDownloadsUi();
@@ -1234,6 +1425,7 @@ namespace BrowserClient
             TabsOverlay.Visibility = Visibility.Collapsed;
             DownloadsOverlay.Visibility = Visibility.Collapsed;
             BookmarksOverlay.Visibility = Visibility.Collapsed;
+            PinToHomeOverlay.Visibility = Visibility.Collapsed;
             HideUrlSuggestions();
             HistoryOverlay.Visibility = Visibility.Visible;
             RefreshHistoryUi();
@@ -1246,6 +1438,7 @@ namespace BrowserClient
             TabsOverlay.Visibility = Visibility.Collapsed;
             DownloadsOverlay.Visibility = Visibility.Collapsed;
             HistoryOverlay.Visibility = Visibility.Collapsed;
+            PinToHomeOverlay.Visibility = Visibility.Collapsed;
             HideUrlSuggestions();
             BookmarksOverlay.Visibility = Visibility.Visible;
             RefreshBookmarksUi();
