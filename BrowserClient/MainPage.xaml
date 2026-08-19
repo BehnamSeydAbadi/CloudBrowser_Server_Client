@@ -63,6 +63,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <Button Name="NavigateBack"
@@ -108,8 +109,20 @@
                                  HorizontalAlignment="Stretch"/>
                     </Border>
 
-                    <Button Name="TabsButton"
+                    <Button Name="BookmarkButton"
                             Grid.Column="3"
+                            Style="{StaticResource ChromeIconButtonStyle}"
+                            Click="BookmarkButton_Click"
+                            ToolTipService.ToolTip="Bookmark">
+                        <FontIcon Name="BookmarkStarIcon"
+                                  FontFamily="Segoe MDL2 Assets"
+                                  Glyph="&#xE734;"
+                                  FontSize="18"
+                                  Foreground="{ThemeResource IconBrush}"/>
+                    </Button>
+
+                    <Button Name="TabsButton"
+                            Grid.Column="4"
                             Style="{StaticResource ChromeIconButtonStyle}"
                             Click="TabsButton_Click"
                             ToolTipService.ToolTip="Tabs">
@@ -132,12 +145,15 @@
                     </Button>
 
                     <Button Name="MoreButton"
-                            Grid.Column="4"
+                            Grid.Column="5"
                             Style="{StaticResource ChromeIconButtonStyle}"
                             ToolTipService.ToolTip="More">
                         <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE712;" FontSize="18" Foreground="{ThemeResource IconBrush}"/>
                         <Button.Flyout>
                             <MenuFlyout Placement="Bottom">
+                                <MenuFlyoutItem Name="BookmarksMenuButton"
+                                                Text="Bookmarks"
+                                                Click="BookmarksMenu_Click"/>
                                 <MenuFlyoutItem Name="HistoryMenuButton"
                                                 Text="History"
                                                 Click="HistoryMenu_Click"/>
@@ -347,6 +363,50 @@
                             Click="ClearHistory_Click"
                             Content="Clear all"/>
                 </Grid>
+            </Grid>
+
+            <Grid Name="BookmarksOverlay"
+                  Grid.RowSpan="2"
+                  Visibility="Collapsed"
+                  Background="{ThemeResource TabsOverlayBrush}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="8,8,8,4" MinHeight="48">
+                    <TextBlock Text="Bookmarks"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource IconBrush}"
+                               VerticalAlignment="Center"
+                               Margin="8,0,0,0"/>
+                    <Button Name="CloseBookmarksButton"
+                            Style="{StaticResource ChromeIconButtonStyle}"
+                            HorizontalAlignment="Right"
+                            Click="CloseBookmarksButton_Click"
+                            ToolTipService.ToolTip="Close">
+                        <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE711;" FontSize="16" Foreground="{ThemeResource IconBrush}"/>
+                    </Button>
+                </Grid>
+
+                <ScrollViewer Grid.Row="1"
+                              VerticalScrollMode="Enabled"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollMode="Disabled"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Padding="12,4">
+                    <StackPanel Name="BookmarkStripPanel" Orientation="Vertical"/>
+                </ScrollViewer>
+
+                <TextBlock Grid.Row="2"
+                           Name="BookmarksEmptyText"
+                           Text="No bookmarks yet"
+                           Margin="16,8,16,16"
+                           HorizontalAlignment="Center"
+                           Foreground="{ThemeResource MutedBrush}"
+                           Visibility="Collapsed"/>
             </Grid>
 
             <Grid Name="DownloadsOverlay"
