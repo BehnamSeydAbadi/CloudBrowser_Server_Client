@@ -44,10 +44,10 @@ For now your phone and your server needs to be on the same network
 - [X] Faster & smarter transport (chunking?, rawbytes?, SYN/ACK)
 - [X] Notifications (web Notification API → native phone toast)
 - [X] Video playback
+- [X] History
+- [X] Bookmark
 
 ### What's needed
-- [ ] History
-- [ ] Bookmark
 - [ ] Microphone
 - [ ] File uploads
 - [ ] Multi-Tenancy
