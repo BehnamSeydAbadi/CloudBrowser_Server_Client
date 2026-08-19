@@ -91,6 +91,9 @@
                         <TextBox Name="urlField"
                                  PlaceholderText="Search or enter address"
                                  KeyDown="TextBox_KeyDown"
+                                 TextChanged="UrlField_TextChanged"
+                                 GotFocus="UrlField_GotFocus"
+                                 LostFocus="UrlField_LostFocus"
                                  IsTextPredictionEnabled="False"
                                  InputScope="Url"
                                  BorderThickness="0"
@@ -135,6 +138,9 @@
                         <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE712;" FontSize="18" Foreground="{ThemeResource IconBrush}"/>
                         <Button.Flyout>
                             <MenuFlyout Placement="Bottom">
+                                <MenuFlyoutItem Name="HistoryMenuButton"
+                                                Text="History"
+                                                Click="HistoryMenu_Click"/>
                                 <MenuFlyoutItem Name="DownloadsMenuButton"
                                                 Text="Downloads"
                                                 Click="DownloadsMenu_Click"/>
@@ -177,6 +183,21 @@
                                 VerticalAlignment="Top"/>
 
                 <Rectangle Name="ScaleRect"/>
+
+                <!-- Chrome-style URL suggestions -->
+                <Border Name="UrlSuggestPanel"
+                        VerticalAlignment="Top"
+                        HorizontalAlignment="Stretch"
+                        Margin="8,4,8,0"
+                        Padding="0,4"
+                        CornerRadius="8"
+                        Background="{ThemeResource TabInactiveBrush}"
+                        BorderBrush="{ThemeResource ChromeLineBrush}"
+                        BorderThickness="1"
+                        Visibility="Collapsed"
+                        Canvas.ZIndex="80">
+                    <StackPanel Name="UrlSuggestStrip" Orientation="Vertical"/>
+                </Border>
 
                 <TextBox x:Name="KeyboardCaptureBox"
                          Opacity="0.02"
@@ -272,6 +293,59 @@
                             FontWeight="SemiBold"
                             Click="NewTab_Click"
                             Content="+ New tab"/>
+                </Grid>
+            </Grid>
+
+            <Grid Name="HistoryOverlay"
+                  Grid.RowSpan="2"
+                  Visibility="Collapsed"
+                  Background="{ThemeResource TabsOverlayBrush}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="8,8,8,4" MinHeight="48">
+                    <TextBlock Text="History"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               Foreground="{ThemeResource IconBrush}"
+                               VerticalAlignment="Center"
+                               Margin="8,0,0,0"/>
+                    <Button Name="CloseHistoryButton"
+                            Style="{StaticResource ChromeIconButtonStyle}"
+                            HorizontalAlignment="Right"
+                            Click="CloseHistoryButton_Click"
+                            ToolTipService.ToolTip="Close">
+                        <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE711;" FontSize="16" Foreground="{ThemeResource IconBrush}"/>
+                    </Button>
+                </Grid>
+
+                <ScrollViewer Grid.Row="1"
+                              VerticalScrollMode="Enabled"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollMode="Disabled"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Padding="12,4">
+                    <StackPanel Name="HistoryStripPanel" Orientation="Vertical"/>
+                </ScrollViewer>
+
+                <Grid Grid.Row="2" Margin="12,8,12,12">
+                    <TextBlock Name="HistoryEmptyText"
+                               Text="No history yet"
+                               HorizontalAlignment="Center"
+                               Foreground="{ThemeResource MutedBrush}"
+                               Visibility="Collapsed"/>
+                    <Button Name="ClearHistoryButton"
+                            HorizontalAlignment="Stretch"
+                            Height="44"
+                            BorderThickness="0"
+                            Background="{ThemeResource PillBrush}"
+                            Foreground="{ThemeResource IconBrush}"
+                            FontWeight="SemiBold"
+                            Click="ClearHistory_Click"
+                            Content="Clear all"/>
                 </Grid>
             </Grid>
 

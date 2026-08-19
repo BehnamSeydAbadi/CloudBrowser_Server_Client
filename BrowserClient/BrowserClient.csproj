@@ -139,6 +139,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ClientMediaCapture.cs" />
     <Compile Include="DownloadStore.cs" />
+    <Compile Include="HistoryStore.cs" />
     <Compile Include="NativeNotification.cs" />
     <Compile Include="StreamAudioPlayer.cs" />
     <Compile Include="WebBrowserDataSource.cs" />

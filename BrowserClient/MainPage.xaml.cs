@@ -39,9 +39,12 @@ namespace BrowserClient
         private string lastTabListJson;
         private UISettings themeSettings;
         private readonly DownloadStore offlineDownloads = new DownloadStore();
+        private readonly HistoryStore browsingHistory = new HistoryStore();
         private readonly HashSet<string> downloadStartToasts = new HashSet<string>();
         private readonly HashSet<string> downloadCompleteToasts = new HashSet<string>();
         private int downloadToastGeneration;
+        private bool suppressUrlSuggest;
+        private int urlSuggestHideGeneration;
 
         public string broadcastAddress = "255.255.255.255";
         Timer UdpDiscoveryTimer;
@@ -68,6 +71,7 @@ namespace BrowserClient
 
             themeSettings = new UISettings();
             themeSettings.ColorValuesChanged += ThemeSettings_ColorValuesChanged;
+            var historyLoad = browsingHistory.EnsureLoadedAsync();
         }
 
         private async void ThemeSettings_ColorValuesChanged(UISettings sender, object args)
@@ -134,9 +138,21 @@ namespace BrowserClient
                 return true;
             }
 
+            if (HistoryOverlay.Visibility == Visibility.Visible)
+            {
+                HistoryOverlay.Visibility = Visibility.Collapsed;
+                return true;
+            }
+
             if (DownloadsOverlay.Visibility == Visibility.Visible)
             {
                 DownloadsOverlay.Visibility = Visibility.Collapsed;
+                return true;
+            }
+
+            if (UrlSuggestPanel != null && UrlSuggestPanel.Visibility == Visibility.Visible)
+            {
+                HideUrlSuggestions();
                 return true;
             }
 
@@ -199,7 +215,7 @@ namespace BrowserClient
 
             pendingNavigateUrl = url.Trim();
             pendingNavigateSent = false;
-            urlField.Text = pendingNavigateUrl;
+            SetUrlFieldText(pendingNavigateUrl);
             SetImmersivePinnedMode(true);
 
             if (ds != null)
@@ -241,6 +257,8 @@ namespace BrowserClient
             {
                 TabsOverlay.Visibility = Visibility.Collapsed;
                 DownloadsOverlay.Visibility = Visibility.Collapsed;
+                HistoryOverlay.Visibility = Visibility.Collapsed;
+                HideUrlSuggestions();
             }
         }
 
@@ -278,13 +296,164 @@ namespace BrowserClient
         }
         private void TextBox_KeyDown(object sender, Windows.UI.Xaml.Input.KeyRoutedEventArgs e)
         {
-            
             if (e.Key == Windows.System.VirtualKey.Enter)
             {
                 var url = urlField.Text;
+                HideUrlSuggestions();
                 ds.Navigate(url);
-                e.Handled = true; LoseFocus(sender);
+                e.Handled = true;
+                LoseFocus(sender);
             }
+            else if (e.Key == Windows.System.VirtualKey.Escape)
+            {
+                HideUrlSuggestions();
+                e.Handled = true;
+                LoseFocus(sender);
+            }
+        }
+
+        private void UrlField_GotFocus(object sender, RoutedEventArgs e)
+        {
+            urlSuggestHideGeneration++;
+            RefreshUrlSuggestions();
+        }
+
+        private async void UrlField_LostFocus(object sender, RoutedEventArgs e)
+        {
+            var generation = ++urlSuggestHideGeneration;
+            try
+            {
+                await Task.Delay(180);
+            }
+            catch
+            {
+                return;
+            }
+            if (generation != urlSuggestHideGeneration)
+                return;
+            if (urlField != null && urlField.FocusState != FocusState.Unfocused)
+                return;
+            HideUrlSuggestions();
+        }
+
+        private void UrlField_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (suppressUrlSuggest)
+                return;
+            if (urlField == null || urlField.FocusState == FocusState.Unfocused)
+            {
+                HideUrlSuggestions();
+                return;
+            }
+            RefreshUrlSuggestions();
+        }
+
+        private void SetUrlFieldText(string text)
+        {
+            suppressUrlSuggest = true;
+            try
+            {
+                urlField.Text = text ?? "";
+            }
+            finally
+            {
+                suppressUrlSuggest = false;
+            }
+        }
+
+        private void RefreshUrlSuggestions()
+        {
+            if (UrlSuggestPanel == null || UrlSuggestStrip == null || immersivePinnedMode)
+            {
+                HideUrlSuggestions();
+                return;
+            }
+
+            var query = urlField != null ? urlField.Text : "";
+            var matches = browsingHistory.Suggest(query);
+            UrlSuggestStrip.Children.Clear();
+
+            if (matches.Count == 0)
+            {
+                HideUrlSuggestions();
+                return;
+            }
+
+            var titleBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabTitleBrush"];
+            var mutedBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabSubtitleBrush"];
+
+            foreach (var item in matches)
+            {
+                var title = string.IsNullOrWhiteSpace(item.title) ? HistoryStore.HostLabel(item.url) : item.title;
+                if (title.Length > 42)
+                    title = title.Substring(0, 39) + "…";
+                var subtitle = item.url ?? "";
+                if (subtitle.Length > 52)
+                    subtitle = subtitle.Substring(0, 49) + "…";
+
+                var row = new Button
+                {
+                    Tag = item.url,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    BorderThickness = new Thickness(0),
+                    Background = new Windows.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.Transparent),
+                    Padding = new Thickness(12, 8, 12, 8),
+                    MinHeight = 48
+                };
+                var texts = new StackPanel();
+                texts.Children.Add(new TextBlock
+                {
+                    Text = title,
+                    FontSize = 14,
+                    FontWeight = Windows.UI.Text.FontWeights.SemiBold,
+                    Foreground = titleBrush,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                texts.Children.Add(new TextBlock
+                {
+                    Text = subtitle,
+                    FontSize = 12,
+                    Foreground = mutedBrush,
+                    Margin = new Thickness(0, 2, 0, 0),
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                row.Content = texts;
+                row.Click += UrlSuggest_Click;
+                UrlSuggestStrip.Children.Add(row);
+            }
+
+            UrlSuggestPanel.Visibility = Visibility.Visible;
+        }
+
+        private void HideUrlSuggestions()
+        {
+            urlSuggestHideGeneration++;
+            if (UrlSuggestPanel != null)
+                UrlSuggestPanel.Visibility = Visibility.Collapsed;
+            if (UrlSuggestStrip != null)
+                UrlSuggestStrip.Children.Clear();
+        }
+
+        private void UrlSuggest_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as FrameworkElement;
+            var url = button?.Tag as string;
+            if (string.IsNullOrEmpty(url) || ds == null)
+                return;
+
+            urlSuggestHideGeneration++;
+            HideUrlSuggestions();
+            SetUrlFieldText(url);
+            ds.Navigate(url);
+            LoseFocus(urlField);
+        }
+
+        private void RecordHistory(string url, string title)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+            browsingHistory.Record(url, string.IsNullOrWhiteSpace(title) ? activeTabTitle : title);
         }
         public static bool IsMobile
         {
@@ -426,7 +595,9 @@ namespace BrowserClient
                     switch (o.PType)
                     {
                         case TextPacketType.NavigatedUrl:
-                            urlField.Text = o.text;
+                            if (urlField.FocusState == FocusState.Unfocused)
+                                SetUrlFieldText(o.text);
+                            RecordHistory(o.text, activeTabTitle);
                             //hack to get proper size on first launch — ScaleRect excludes navbars/tabs
                             ds.SizeChange(
                                 new Size { Width = ScaleRect.ActualWidth, Height = ScaleRect.ActualHeight },
@@ -654,6 +825,8 @@ namespace BrowserClient
 
             await ActiveDownloads.EnsureLoadedAsync();
             TabsOverlay.Visibility = Visibility.Collapsed;
+            HistoryOverlay.Visibility = Visibility.Collapsed;
+            HideUrlSuggestions();
             DownloadsOverlay.Visibility = Visibility.Visible;
             RefreshDownloadsUi();
         }
@@ -976,14 +1149,19 @@ namespace BrowserClient
             var active = list.tabs.Find(t => t.id == list.activeId);
             if (active != null)
             {
-                if (!string.IsNullOrEmpty(active.url))
-                    urlField.Text = active.url;
+                if (!string.IsNullOrEmpty(active.url) && urlField.FocusState == FocusState.Unfocused)
+                    SetUrlFieldText(active.url);
                 activeTabTitle = string.IsNullOrWhiteSpace(active.title) ? "New Tab" : active.title;
+                if (!string.IsNullOrEmpty(active.url))
+                    browsingHistory.Record(active.url, activeTabTitle, countVisit: false);
             }
         }
 
         private void TabsButton_Click(object sender, RoutedEventArgs e)
         {
+            HideUrlSuggestions();
+            DownloadsOverlay.Visibility = Visibility.Collapsed;
+            HistoryOverlay.Visibility = Visibility.Collapsed;
             TabsOverlay.Visibility = Visibility.Visible;
         }
 
@@ -1029,8 +1207,142 @@ namespace BrowserClient
             MoreButton.Flyout?.Hide();
             await ActiveDownloads.EnsureLoadedAsync();
             TabsOverlay.Visibility = Visibility.Collapsed;
+            HistoryOverlay.Visibility = Visibility.Collapsed;
+            HideUrlSuggestions();
             DownloadsOverlay.Visibility = Visibility.Visible;
             RefreshDownloadsUi();
+        }
+
+        private async void HistoryMenu_Click(object sender, RoutedEventArgs e)
+        {
+            MoreButton.Flyout?.Hide();
+            await browsingHistory.EnsureLoadedAsync();
+            TabsOverlay.Visibility = Visibility.Collapsed;
+            DownloadsOverlay.Visibility = Visibility.Collapsed;
+            HideUrlSuggestions();
+            HistoryOverlay.Visibility = Visibility.Visible;
+            RefreshHistoryUi();
+        }
+
+        private void CloseHistoryButton_Click(object sender, RoutedEventArgs e)
+        {
+            HistoryOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private void RefreshHistoryUi()
+        {
+            if (HistoryStripPanel == null)
+                return;
+
+            HistoryStripPanel.Children.Clear();
+            var list = browsingHistory.GetSnapshot();
+            var empty = list.Count == 0;
+            if (HistoryEmptyText != null)
+                HistoryEmptyText.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+            if (ClearHistoryButton != null)
+                ClearHistoryButton.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+
+            var titleBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabTitleBrush"];
+            var mutedBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabSubtitleBrush"];
+            var pillBrush = (Windows.UI.Xaml.Media.Brush)Application.Current.Resources["TabInactiveBrush"];
+
+            foreach (var item in list)
+            {
+                var row = new Grid
+                {
+                    Margin = new Thickness(0, 0, 0, 8),
+                    MinHeight = 56,
+                    Background = pillBrush,
+                    Tag = item.url
+                };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var title = string.IsNullOrWhiteSpace(item.title) ? HistoryStore.HostLabel(item.url) : item.title;
+                var texts = new StackPanel
+                {
+                    Margin = new Thickness(14, 10, 8, 10),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                texts.Children.Add(new TextBlock
+                {
+                    Text = title,
+                    FontSize = 15,
+                    FontWeight = Windows.UI.Text.FontWeights.SemiBold,
+                    Foreground = titleBrush,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                texts.Children.Add(new TextBlock
+                {
+                    Text = item.url ?? "",
+                    FontSize = 12,
+                    Foreground = mutedBrush,
+                    Margin = new Thickness(0, 2, 0, 0),
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                });
+                Grid.SetColumn(texts, 0);
+                row.Children.Add(texts);
+
+                var delete = new Button
+                {
+                    Tag = item.url,
+                    Width = 44,
+                    Height = 44,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 6, 0),
+                    Background = new Windows.UI.Xaml.Media.SolidColorBrush(Windows.UI.Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Content = new FontIcon
+                    {
+                        FontFamily = new Windows.UI.Xaml.Media.FontFamily("Segoe MDL2 Assets"),
+                        Glyph = "\uE74D",
+                        FontSize = 16,
+                        Foreground = titleBrush
+                    }
+                };
+                delete.Click += DeleteHistory_Click;
+                Grid.SetColumn(delete, 1);
+                row.Children.Add(delete);
+
+                row.Tapped += HistoryRow_Tapped;
+                HistoryStripPanel.Children.Add(row);
+            }
+        }
+
+        private void HistoryRow_Tapped(object sender, Windows.UI.Xaml.Input.TappedRoutedEventArgs e)
+        {
+            var element = sender as FrameworkElement;
+            var url = element?.Tag as string;
+            if (string.IsNullOrEmpty(url) || ds == null)
+                return;
+
+            if (e.OriginalSource is Windows.UI.Xaml.Controls.Primitives.ButtonBase)
+                return;
+
+            e.Handled = true;
+            HistoryOverlay.Visibility = Visibility.Collapsed;
+            HideUrlSuggestions();
+            SetUrlFieldText(url);
+            ds.Navigate(url);
+        }
+
+        private void DeleteHistory_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as FrameworkElement;
+            var url = button?.Tag as string;
+            if (string.IsNullOrEmpty(url))
+                return;
+
+            browsingHistory.Remove(url);
+            RefreshHistoryUi();
+        }
+
+        private void ClearHistory_Click(object sender, RoutedEventArgs e)
+        {
+            browsingHistory.Clear();
+            RefreshHistoryUi();
         }
 
         private void CloseDownloadsButton_Click(object sender, RoutedEventArgs e)
