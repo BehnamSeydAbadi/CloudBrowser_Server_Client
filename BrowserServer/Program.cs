@@ -7,7 +7,6 @@ using WebSocketSharp;
 using WebSocketSharp.Server;
 using CefSharp.Structs;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -18,7 +17,7 @@ namespace BrowserServer
 {
     class Program
     {
-        public class test : WebSocketBehavior
+        public class test : WebSocketBehavior, IBrowserClientCommands
         {
             //tested on 950XL
             public static int ScalingFactor = 2;
@@ -38,157 +37,135 @@ namespace BrowserServer
             {
                 if (e.IsBinary)
                 {
-                    MediaBridge.HandleClientBinary(e.RawData);
+                    ClientCommandDispatcher.DispatchBinary(e.RawData, this);
                     return;
                 }
 
-                var packet = JsonConvert.DeserializeObject<CommPacket>(e.Data);
+                ClientCommandDispatcher.DispatchText(
+                    e.Data,
+                    TabManager.ActiveBrowser != null,
+                    ScalingFactor,
+                    this);
+            }
+
+            public void CreateTab()
+            {
+                TabManager.CreateTab();
+            }
+
+            public void CloseTab(string tabId)
+            {
+                TabManager.CloseTab(tabId);
+            }
+
+            public void SwitchTab(string tabId)
+            {
+                TabManager.SwitchTab(tabId);
+            }
+
+            public void MediaPermissionResponse(MediaPermissionPayload payload)
+            {
+                MediaBridge.HandlePermissionResponse(payload);
+            }
+
+            public void NotificationPermissionResponse(NotificationPermissionPayload payload)
+            {
+                NotificationBridge.HandlePermissionResponse(payload);
+            }
+
+            public void PwaInstalled(PwaInstallPayload payload)
+            {
+                PwaBridge.SetInstalledUrls(payload != null ? payload.urls : null, payload != null && payload.reload);
+            }
+
+            public void TextInputSend(string text)
+            {
                 var browser = TabManager.ActiveBrowser;
-                if (browser == null && packet.PType != PacketType.CreateTab)
+                if (browser == null)
                     return;
 
-                switch (packet.PType)
+                Console.WriteLine(text);
+                var textscript = @"(function (){document.activeElement.value='" + text + "'})();";
+
+                browser.EvaluateScriptAsync(textscript).ContinueWith(t =>
                 {
-                    case PacketType.CreateTab:
-                        TabManager.CreateTab();
-                        break;
+                    browser.GetBrowserHost().SendKeyEvent(new KeyEvent
+                    {
+                        WindowsKeyCode = 0x0D,
+                        FocusOnEditableField = true,
+                        IsSystemKey = false,
+                        Type = KeyEventType.RawKeyDown
+                    });
+                });
+            }
 
-                    case PacketType.CloseTab:
-                        if (!string.IsNullOrEmpty(packet.JSONData))
-                            TabManager.CloseTab(packet.JSONData);
-                        break;
+            public void Ack()
+            {
+                Console.WriteLine("ACK");
+            }
 
-                    case PacketType.SwitchTab:
-                        if (!string.IsNullOrEmpty(packet.JSONData))
-                            TabManager.SwitchTab(packet.JSONData);
-                        break;
+            public void DownloadAck(DownloadAckPayload ack)
+            {
+                StreamingDownloadHandler.HandleClientAck(ack.id, ack.seq);
+            }
 
-                    case PacketType.MediaPermissionResponse:
-                        try
-                        {
-                            var media = JsonConvert.DeserializeObject<MediaPermissionPayload>(packet.JSONData ?? "");
-                            MediaBridge.HandlePermissionResponse(media);
-                        }
-                        catch
-                        {
-                        }
-                        break;
+            public void SendKey(SendKeyCommand key)
+            {
+                var browser = TabManager.ActiveBrowser;
+                if (browser == null || key == null)
+                    return;
 
-                    case PacketType.NotificationPermissionResponse:
-                        try
-                        {
-                            var notify = JsonConvert.DeserializeObject<NotificationPermissionPayload>(packet.JSONData ?? "");
-                            NotificationBridge.HandlePermissionResponse(notify);
-                        }
-                        catch
-                        {
-                        }
-                        break;
+                var host = browser.GetBrowserHost();
+                host.SetFocus(true);
 
-                    case PacketType.PwaInstalled:
-                        try
+                switch (key.Kind)
+                {
+                    case SendKeyKind.Insert:
+                        if (!string.IsNullOrEmpty(key.Text))
                         {
-                            var pwa = JsonConvert.DeserializeObject<PwaInstallPayload>(packet.JSONData ?? "");
-                            PwaBridge.SetInstalledUrls(pwa != null ? pwa.urls : null, pwa != null && pwa.reload);
-                        }
-                        catch
-                        {
+                            var script = JavascriptFunctions.InsertText(JsonConvert.SerializeObject(key.Text));
+                            browser.EvaluateScriptAsync(script);
                         }
                         break;
 
-                    case PacketType.TextInputSend:
-                        Console.WriteLine(packet.JSONData);
-                        var textscript = @"(function (){document.activeElement.value='" + packet.JSONData + "'})();";
+                    case SendKeyKind.Backspace:
+                        browser.EvaluateScriptAsync(JavascriptFunctions.Backspace);
+                        break;
 
-                        browser.EvaluateScriptAsync(textscript).ContinueWith(t =>
+                    case SendKeyKind.Enter:
+                        host.SendKeyEvent(new KeyEvent
                         {
-                            browser.GetBrowserHost().SendKeyEvent(new KeyEvent
-                            {
-                                WindowsKeyCode = 0x0D,
-                                FocusOnEditableField = true,
-                                IsSystemKey = false,
-                                Type = KeyEventType.RawKeyDown
-                            });
+                            WindowsKeyCode = 0x0D,
+                            NativeKeyCode = 0x0D,
+                            FocusOnEditableField = true,
+                            IsSystemKey = false,
+                            Type = KeyEventType.RawKeyDown
+                        });
+                        host.SendKeyEvent(new KeyEvent
+                        {
+                            WindowsKeyCode = 0x0D,
+                            NativeKeyCode = 0x0D,
+                            FocusOnEditableField = true,
+                            IsSystemKey = false,
+                            Type = KeyEventType.Char
+                        });
+                        host.SendKeyEvent(new KeyEvent
+                        {
+                            WindowsKeyCode = 0x0D,
+                            NativeKeyCode = 0x0D,
+                            FocusOnEditableField = true,
+                            IsSystemKey = false,
+                            Type = KeyEventType.KeyUp
                         });
                         break;
 
-                    case PacketType.ACK:
-                        Console.WriteLine("ACK");
-                        break;
-
-                    case PacketType.DownloadAck:
-                        try
+                    case SendKeyKind.Coded:
+                    case SendKeyKind.LegacyChar:
                         {
-                            var ack = JsonConvert.DeserializeObject<DownloadAckPayload>(packet.JSONData ?? "");
-                            if (ack != null)
-                                StreamingDownloadHandler.HandleClientAck(ack.id, ack.seq);
-                        }
-                        catch
-                        {
-                        }
-                        break;
-
-                    case PacketType.SendKey:
-                        {
-                            var host = browser.GetBrowserHost();
-                            host.SetFocus(true);
-
-                            var raw = packet.JSONData ?? "";
-                            if (raw.TrimStart().StartsWith("{"))
+                            KeyEventType eventType = KeyEventType.Char;
+                            if (key.Kind == SendKeyKind.Coded)
                             {
-                                var keyObj = JObject.Parse(raw);
-                                var type = (keyObj.Value<string>("type") ?? "char").ToLowerInvariant();
-
-                                if (type == "insert")
-                                {
-                                    var text = keyObj.Value<string>("text") ?? "";
-                                    if (text.Length > 0)
-                                    {
-                                        var script = JavascriptFunctions.InsertText(JsonConvert.SerializeObject(text));
-                                        browser.EvaluateScriptAsync(script);
-                                    }
-                                    break;
-                                }
-
-                                if (type == "backspace")
-                                {
-                                    browser.EvaluateScriptAsync(JavascriptFunctions.Backspace);
-                                    break;
-                                }
-
-                                if (type == "enter")
-                                {
-                                    // Prefer key events for form submit / search.
-                                    host.SendKeyEvent(new KeyEvent
-                                    {
-                                        WindowsKeyCode = 0x0D,
-                                        NativeKeyCode = 0x0D,
-                                        FocusOnEditableField = true,
-                                        IsSystemKey = false,
-                                        Type = KeyEventType.RawKeyDown
-                                    });
-                                    host.SendKeyEvent(new KeyEvent
-                                    {
-                                        WindowsKeyCode = 0x0D,
-                                        NativeKeyCode = 0x0D,
-                                        FocusOnEditableField = true,
-                                        IsSystemKey = false,
-                                        Type = KeyEventType.Char
-                                    });
-                                    host.SendKeyEvent(new KeyEvent
-                                    {
-                                        WindowsKeyCode = 0x0D,
-                                        NativeKeyCode = 0x0D,
-                                        FocusOnEditableField = true,
-                                        IsSystemKey = false,
-                                        Type = KeyEventType.KeyUp
-                                    });
-                                    break;
-                                }
-
-                                var code = keyObj.Value<int>("code");
-                                KeyEventType eventType = KeyEventType.Char;
-                                switch (type)
+                                switch (key.EventType)
                                 {
                                     case "down":
                                         eventType = KeyEventType.RawKeyDown;
@@ -197,117 +174,94 @@ namespace BrowserServer
                                         eventType = KeyEventType.KeyUp;
                                         break;
                                 }
-
-                                host.SendKeyEvent(new KeyEvent
-                                {
-                                    WindowsKeyCode = code,
-                                    NativeKeyCode = code,
-                                    FocusOnEditableField = true,
-                                    IsSystemKey = false,
-                                    Type = eventType
-                                });
                             }
-                            else
+
+                            host.SendKeyEvent(new KeyEvent
                             {
-                                var code = int.Parse(raw.Trim('"'));
-                                host.SendKeyEvent(new KeyEvent
-                                {
-                                    WindowsKeyCode = code,
-                                    NativeKeyCode = code,
-                                    FocusOnEditableField = true,
-                                    IsSystemKey = false,
-                                    Type = KeyEventType.Char
-                                });
-                            }
+                                WindowsKeyCode = key.Code,
+                                NativeKeyCode = key.Code,
+                                FocusOnEditableField = true,
+                                IsSystemKey = false,
+                                Type = eventType
+                            });
                         }
-                        break;
-
-                    case PacketType.Navigation:
-                        {
-                            var input = (packet.JSONData ?? "").Trim();
-                            if (NetworkManager.TryGetNavigableUrl(input, out var navUrl))
-                            {
-                                Console.WriteLine("Navigate URL: " + navUrl);
-                                browser.LoadUrl(navUrl);
-                            }
-                            else
-                            {
-                                Console.WriteLine("Search: " + input);
-                                browser.LoadUrl("https://www.google.com/search?q=" + Uri.EscapeDataString(input));
-                            }
-                        }
-                        break;
-
-                    case PacketType.NavigateBack:
-                        {
-                            var stopBeforeBlank = string.Equals(packet.JSONData, "stopBeforeBlank", StringComparison.Ordinal);
-                            var ignored = HandleNavigateBackAsync(browser, stopBeforeBlank);
-                        }
-                        break;
-                    case PacketType.NavigateForward:
-                        if (browser.CanGoForward) browser.Forward();
-                        break;
-
-                    case PacketType.SizeChange:
-                        var jsonObject = JObject.Parse(packet.JSONData);
-                        // Match BrowserClient ScaleRect exactly (already excludes bottom chrome/navbars).
-                        var clientW = Math.Max(1, (int)Math.Round(jsonObject.Value<double>("Width")));
-                        var clientH = Math.Max(1, (int)Math.Round(jsonObject.Value<double>("Height")));
-                        var scaleToken = jsonObject["Scale"];
-                        var clientScale = scaleToken != null && scaleToken.Type != JTokenType.Null
-                            ? (float)scaleToken.Value<double>()
-                            : ScalingFactor;
-                        if (clientScale < 1f)
-                            clientScale = 1f;
-
-                        TabManager.SetViewport(clientW, clientH, clientScale);
-                        break;
-
-                    case PacketType.TouchDown:
-                        var t_down = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
-                        var press = new TouchEvent()
-                        {
-                            Id = (int)t_down.id,
-                            X = (float)t_down.px * browser.Size.Width,
-                            Y = (float)t_down.py * browser.Size.Height,
-                            PointerType = CefSharp.Enums.PointerType.Touch,
-                            Pressure = 0,
-                            Type = CefSharp.Enums.TouchEventType.Pressed,
-                        };
-                        browser.GetBrowser().GetHost().SendTouchEvent(press);
-                        break;
-
-                    case PacketType.TouchUp:
-                        var t_up = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
-                        var up = new TouchEvent()
-                        {
-                            Id = (int)t_up.id,
-                            X = (float)t_up.px * browser.Size.Width,
-                            Y = (float)t_up.py * browser.Size.Height,
-                            PointerType = CefSharp.Enums.PointerType.Touch,
-                            Pressure = 0,
-                            Type = CefSharp.Enums.TouchEventType.Released,
-                        };
-                        browser.GetBrowser().GetHost().SendTouchEvent(up);
-                        break;
-
-                    case PacketType.TouchMoved:
-                        var t_move = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
-                        var move = new TouchEvent()
-                        {
-                            Id = (int)t_move.id,
-                            X = (float)t_move.px * browser.Size.Width,
-                            Y = (float)t_move.py * browser.Size.Height,
-                            PointerType = CefSharp.Enums.PointerType.Touch,
-                            Pressure = 0,
-                            Type = CefSharp.Enums.TouchEventType.Moved,
-                        };
-                        browser.GetBrowser().GetHost().SendTouchEvent(move);
-                        break;
-
-                    default:
                         break;
                 }
+            }
+
+            public void Navigate(string input)
+            {
+                var browser = TabManager.ActiveBrowser;
+                if (browser == null)
+                    return;
+
+                if (NetworkManager.TryGetNavigableUrl(input, out var navUrl))
+                {
+                    Console.WriteLine("Navigate URL: " + navUrl);
+                    browser.LoadUrl(navUrl);
+                }
+                else
+                {
+                    Console.WriteLine("Search: " + input);
+                    browser.LoadUrl("https://www.google.com/search?q=" + Uri.EscapeDataString(input));
+                }
+            }
+
+            public void NavigateBack(bool stopBeforeBlank)
+            {
+                var browser = TabManager.ActiveBrowser;
+                if (browser == null)
+                    return;
+                var ignored = HandleNavigateBackAsync(browser, stopBeforeBlank);
+            }
+
+            public void NavigateForward()
+            {
+                var browser = TabManager.ActiveBrowser;
+                if (browser != null && browser.CanGoForward)
+                    browser.Forward();
+            }
+
+            public void SizeChange(int width, int height, float scale)
+            {
+                TabManager.SetViewport(width, height, scale);
+            }
+
+            public void Touch(TouchKind kind, PointerPacket pointer)
+            {
+                var browser = TabManager.ActiveBrowser;
+                if (browser == null)
+                    return;
+
+                CefSharp.Enums.TouchEventType type;
+                switch (kind)
+                {
+                    case TouchKind.Up:
+                        type = CefSharp.Enums.TouchEventType.Released;
+                        break;
+                    case TouchKind.Moved:
+                        type = CefSharp.Enums.TouchEventType.Moved;
+                        break;
+                    default:
+                        type = CefSharp.Enums.TouchEventType.Pressed;
+                        break;
+                }
+
+                var ev = new TouchEvent()
+                {
+                    Id = (int)pointer.id,
+                    X = (float)pointer.px * browser.Size.Width,
+                    Y = (float)pointer.py * browser.Size.Height,
+                    PointerType = CefSharp.Enums.PointerType.Touch,
+                    Pressure = 0,
+                    Type = type,
+                };
+                browser.GetBrowser().GetHost().SendTouchEvent(ev);
+            }
+
+            public void ClientBinary(byte[] data)
+            {
+                MediaBridge.HandleClientBinary(data);
             }
         }
 

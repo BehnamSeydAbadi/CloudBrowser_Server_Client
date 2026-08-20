@@ -130,6 +130,8 @@
     <Compile Include="MobileChromeIdentity.cs" />
     <Compile Include="NetworkManager.cs" />
     <Compile Include="Packets.cs" />
+    <Compile Include="WebSocketJsonProtocol.cs" />
+    <Compile Include="ClientCommandDispatcher.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="TabManager.cs" />
     <Compile Include="VideoPlaybackBridge.cs" />
