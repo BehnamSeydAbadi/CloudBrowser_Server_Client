@@ -48,10 +48,10 @@ For now your phone and your server needs to be on the same network
 - [X] Bookmark
 
 ### What's needed
+- [ ] Multi-Tenancy
+- [ ] In Private/Incognito
 - [ ] Microphone
 - [ ] File uploads
-- [ ] Multi-Tenancy
 - [ ] Faster rendering (GPU?)
 - [ ] Large File downloads
-- [ ] In Private/Incognito
 - [ ] General browser stuff
