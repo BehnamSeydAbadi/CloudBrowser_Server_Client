@@ -132,6 +132,9 @@
     <Compile Include="Packets.cs" />
     <Compile Include="WebSocketJsonProtocol.cs" />
     <Compile Include="ClientCommandDispatcher.cs" />
+    <Compile Include="RenderFrameSession.cs" />
+    <Compile Include="JpegRenderEncoder.cs" />
+    <Compile Include="BinaryWebSocketFrame.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="TabManager.cs" />
     <Compile Include="VideoPlaybackBridge.cs" />

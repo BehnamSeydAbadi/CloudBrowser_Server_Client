@@ -42,5 +42,6 @@
       <SetPlatform>Platform=x64</SetPlatform>
     </ProjectReference>
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Drawing" />
   </ItemGroup>
 </Project>

@@ -7,8 +7,6 @@ using WebSocketSharp;
 using WebSocketSharp.Server;
 using CefSharp.Structs;
 using Newtonsoft.Json;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Text;
 using CefSharp.Enums;
@@ -360,28 +358,12 @@ namespace BrowserServer
             timer.Dispose();
         }
 
-        static int captureInFlight = 0;
-        static int captureStartedTick = 0;
-        static int lastMediaAwareFrameTick = 0;
-        static int lastVideoPageTick = 0;
-        static int lastFrameHash;
-        static bool hasLastHash;
-        static int lastSendTick;
-        static int lastDirtyTick;
-        static bool sentCrispFrame;
-        static ImageCodecInfo jpegCodec;
-        static MemoryStream encodeStream;
-        const int CaptureStuckMs = 3000;
-        const int KeepaliveMs = 750;
-        const int CrispAfterStillMs = 160;
+        static readonly RenderFrameSession frameSession = new RenderFrameSession();
+        static readonly JpegRenderEncoder jpegEncoder = new JpegRenderEncoder();
 
         public static void ResetCaptureState()
         {
-            Interlocked.Exchange(ref captureInFlight, 0);
-            captureStartedTick = 0;
-            lastFrameHash = 0;
-            hasLastHash = false;
-            sentCrispFrame = false;
+            frameSession.Reset();
         }
 
         static void Callback(object state)
@@ -392,49 +374,22 @@ namespace BrowserServer
                 if (browser == null || !browser.IsBrowserInitialized)
                     return;
 
-                // While a file is streaming to the phone, skip JPEG frames so FILE chunks
-                // are not delayed/lost on the shared WebSocket (avoids transfer interrupts).
-                if (StreamingDownloadHandler.IsStreamingToClients)
-                    return;
-
-                // Audio shares this socket with JPEGs — skip a page frame if PCM is backing up.
-                if (StreamingAudioHandler.PendingCount > 12)
+                var now = Environment.TickCount;
+                if (frameSession.GetSharedSocketSkip(
+                        StreamingDownloadHandler.IsStreamingToClients,
+                        StreamingAudioHandler.PendingCount) != RenderFrameSkipReason.None)
                     return;
 
                 VideoPlaybackBridge.Poll(browser);
 
-                bool mediaOn = MediaBridge.IsCaptureActive;
-                bool videoOn = VideoPlaybackBridge.IsStreaming;
-                // Keep a slow page stream while camera is on (so QR UI still updates), but
-                // leave most of the WS for CAM uplink — full 20fps + CAM freezes WM10.
-                var now = Environment.TickCount;
-                if (mediaOn)
-                {
-                    if (now - lastMediaAwareFrameTick < 400)
-                        return;
-                    lastMediaAwareFrameTick = now;
-                }
-                else if (videoOn)
-                {
-                    // OnPaint already sends video frames; only a slow UI keepalive here.
-                    if (now - lastVideoPageTick < 750)
-                        return;
-                    lastVideoPageTick = now;
-                }
-
-                // Recover if a previous capture never finished (used to cause permanent black screen).
-                if (Interlocked.CompareExchange(ref captureInFlight, 1, 0) != 0)
-                {
-                    var started = Volatile.Read(ref captureStartedTick);
-                    if (started != 0 && (now - started) > CaptureStuckMs)
-                    {
-                        Console.WriteLine("Frame capture stuck — resetting");
-                        Interlocked.Exchange(ref captureInFlight, 0);
-                    }
+                if (frameSession.GetMediaThrottleSkip(
+                        MediaBridge.IsCaptureActive,
+                        VideoPlaybackBridge.IsStreaming,
+                        now) != RenderFrameSkipReason.None)
                     return;
-                }
 
-                captureStartedTick = now;
+                if (!frameSession.TryBeginCapture(now))
+                    return;
 
                 try
                 {
@@ -445,95 +400,25 @@ namespace BrowserServer
                         if (bitmap == null || server == null)
                             return;
 
-                        int hash = HashBitmap(bitmap);
-                        bool dirty = !hasLastHash || hash != lastFrameHash;
+                        int hash = BitmapContentHash.Compute(bitmap);
                         long quality;
-
-                        if (mediaOn)
-                        {
-                            quality = 50L;
-                        }
-                        else if (dirty)
-                        {
-                            lastFrameHash = hash;
-                            hasLastHash = true;
-                            lastDirtyTick = now;
-                            sentCrispFrame = false;
-                            // Fast motion: slightly higher than the old 70, small enough for 30fps LAN.
-                            quality = 80L;
-                        }
-                        else if (!sentCrispFrame && (now - lastDirtyTick) >= CrispAfterStillMs)
-                        {
-                            // Page settled — one sharp frame so text/icons look clean.
-                            sentCrispFrame = true;
-                            quality = 90L;
-                        }
-                        else if ((now - lastSendTick) < KeepaliveMs)
-                        {
+                        if (!frameSession.TrySelectQuality(hash, MediaBridge.IsCaptureActive, now, out quality))
                             return;
-                        }
-                        else
-                        {
-                            quality = 82L;
-                        }
 
-                        if (jpegCodec == null)
-                            jpegCodec = GetEncoder(ImageFormat.Jpeg);
-                        if (encodeStream == null)
-                            encodeStream = new MemoryStream(160 * 1024);
-                        encodeStream.SetLength(0);
-
-                        var encoderParameters = new EncoderParameters(1);
-                        encoderParameters.Param[0] = new EncoderParameter(
-                            System.Drawing.Imaging.Encoder.Quality, quality);
-                        bitmap.Save(encodeStream, jpegCodec ?? GetEncoder(ImageFormat.Jpeg), encoderParameters);
-                        server.WebSocketServices.Broadcast(encodeStream.ToArray());
-                        lastSendTick = now;
+                        var jpeg = jpegEncoder.Encode(bitmap, quality);
+                        server.WebSocketServices.Broadcast(jpeg);
+                        frameSession.MarkSent(now);
                     }
                 }
                 finally
                 {
-                    Interlocked.Exchange(ref captureInFlight, 0);
+                    frameSession.EndCapture();
                 }
             }
             catch (Exception ex)
             {
-                Interlocked.Exchange(ref captureInFlight, 0);
+                frameSession.EndCapture();
                 Console.WriteLine("Frame capture error: " + ex.Message);
-            }
-        }
-
-        /// <summary>Cheap content hash so static pages are not re-encoded every tick.</summary>
-        static int HashBitmap(Bitmap bitmap)
-        {
-            var rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
-            BitmapData data = null;
-            try
-            {
-                data = bitmap.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-                int stride = Math.Abs(data.Stride);
-                int w = bitmap.Width;
-                int h = bitmap.Height;
-                int hash = w * 73856093 ^ h * 19349663;
-                IntPtr scan0 = data.Scan0;
-                for (int y = 0; y < h; y += 4)
-                {
-                    int row = y * stride;
-                    for (int x = 0; x < w; x += 4)
-                        hash = (hash * 16777619) ^ Marshal.ReadInt32(scan0, row + (x << 2));
-                }
-                return hash;
-            }
-            catch
-            {
-                return Environment.TickCount;
-            }
-            finally
-            {
-                if (data != null)
-                {
-                    try { bitmap.UnlockBits(data); } catch { }
-                }
             }
         }
 
@@ -542,15 +427,7 @@ namespace BrowserServer
         {
             frameNum++;
             var browserImage = new Bitmap(e.Width, e.Height, 4 * e.Width, System.Drawing.Imaging.PixelFormat.Format32bppRgb, e.BufferHandle);
-            byte[] bufferBytes;
-            var encoderParameters = new EncoderParameters(1);
-            encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
-            using (MemoryStream stream = new MemoryStream())
-            {
-                browserImage.Save(stream, GetEncoder(ImageFormat.Jpeg), encoderParameters);
-                bufferBytes = stream.ToArray();
-            }
-            server.WebSocketServices.Broadcast(bufferBytes);
+            server.WebSocketServices.Broadcast(jpegEncoder.Encode(browserImage, 75L));
         }
 
         private static async System.Threading.Tasks.Task HandleNavigateBackAsync(ChromiumWebBrowser browser, bool stopBeforeBlank)
@@ -641,19 +518,6 @@ namespace BrowserServer
             catch
             {
             }
-        }
-
-        private static ImageCodecInfo GetEncoder(ImageFormat format)
-        {
-            var codecs = ImageCodecInfo.GetImageDecoders();
-            foreach (var codec in codecs)
-            {
-                if (codec.FormatID == format.Guid)
-                {
-                    return codec;
-                }
-            }
-            return null;
         }
 
         //TODO: accelerated Draw
