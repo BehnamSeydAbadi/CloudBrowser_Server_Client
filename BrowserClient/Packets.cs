@@ -72,7 +72,24 @@ namespace BrowserClient
         /// <summary>Phone Allow/Deny for NotificationPermissionRequest.</summary>
         NotificationPermissionResponse,
         /// <summary>Origins pinned via Add to Home — treat as installed PWAs.</summary>
-        PwaInstalled
+        PwaInstalled,
+        /// <summary>Phone display/locale environment sent on connect.</summary>
+        ClientEnvironment
+    }
+
+    public class ClientEnvironmentPayload
+    {
+        public int cssWidth;
+        public int cssHeight;
+        public double devicePixelRatio;
+        public bool isMobile;
+        public string acceptLanguage;
+        public int screenWidth;
+        public int screenHeight;
+        public string colorScheme;
+        public string timeZone;
+        public int utcOffsetMinutes;
+        public string orientation;
     }
 
     public class MediaPermissionPayload

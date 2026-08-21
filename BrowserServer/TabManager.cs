@@ -130,6 +130,7 @@ namespace BrowserServer
                 MediaBridge.InjectShim(e.Frame);
                 NotificationBridge.InjectShim(e.Frame);
                 PwaBridge.InjectShim(e.Frame);
+                ClientEnvironmentBridge.InjectShim(e.Frame);
                 if (e.Frame.IsMain)
                     VideoPlaybackBridge.Poll(browser);
             };
@@ -141,6 +142,7 @@ namespace BrowserServer
                     MediaBridge.InjectShim(e.Frame);
                     NotificationBridge.InjectShim(e.Frame);
                     PwaBridge.InjectShim(e.Frame);
+                    ClientEnvironmentBridge.InjectShim(e.Frame);
                 }
             };
 
@@ -265,8 +267,8 @@ namespace BrowserServer
                 CssHeight = cssHeight;
                 // Cap DPR: phone @4x screenshots every frame easily OOM/crash CEF OffScreen.
                 var capped = deviceScaleFactor <= 0 ? 1f : deviceScaleFactor;
-                if (capped > 2f)
-                    capped = 2f;
+                if (capped > 3f)
+                    capped = 3f;
                 DeviceScaleFactor = capped;
                 BrowserSize = new Size(cssWidth, cssHeight);
 
@@ -384,6 +386,7 @@ namespace BrowserServer
                         MediaBridge.InjectShim(main);
                         NotificationBridge.InjectShim(main);
                         PwaBridge.InjectShim(main);
+                        ClientEnvironmentBridge.InjectShim(main);
                     }
                 }
                 catch

@@ -36,6 +36,8 @@ namespace BrowserClient
         public event EventHandler<NotificationPermissionPayload> NotificationPermissionRequested;
         /// <summary>Pinned Start-tile URLs to treat as installed PWAs (sent right after connect).</summary>
         public Func<Task<List<string>>> ProvidePwaUrls;
+        /// <summary>Builds display/locale environment on the UI thread.</summary>
+        public Func<Task<ClientEnvironmentPayload>> ProvideClientEnvironment;
 
         public async void StartRecive(string addr)
         {
@@ -55,6 +57,7 @@ namespace BrowserClient
             {
                 await sock.ConnectAsync(new Uri(addr), CancellationToken.None);
                 await Downloads.EnsureLoadedAsync();
+                await SendClientEnvironmentAsync();
                 await SendPwaInstalledAsync(false);
 
                 // Typical messages are << 1MB; grow on demand for rare large frames.
@@ -426,6 +429,29 @@ namespace BrowserClient
             }
 
             await SendPwaInstalledAsync(urls, reload);
+        }
+
+        public async Task SendClientEnvironmentAsync()
+        {
+            try
+            {
+                if (sock == null || sock.State != WebSocketState.Open || ProvideClientEnvironment == null)
+                    return;
+
+                var payload = await ProvideClientEnvironment();
+                if (payload == null)
+                    return;
+
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.ClientEnvironment,
+                    JSONData = JsonConvert.SerializeObject(payload)
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
+            }
         }
 
         public async Task SendPwaInstalledAsync(IEnumerable<string> urls, bool reload)

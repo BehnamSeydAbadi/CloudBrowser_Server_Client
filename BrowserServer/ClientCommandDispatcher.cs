@@ -23,6 +23,7 @@ namespace BrowserServer
         void NavigateBack(bool stopBeforeBlank);
         void NavigateForward();
         void SizeChange(int width, int height, float scale);
+        void ClientEnvironment(ClientEnvironmentPayload payload);
         void Touch(TouchKind kind, PointerPacket pointer);
         void ClientBinary(byte[] data);
     }
@@ -57,7 +58,9 @@ namespace BrowserServer
             if (!WebSocketJsonProtocol.TryDecodeCommPacket(json, out packet))
                 return DispatchResult.IgnoredMalformed;
 
-            if (!hasActiveBrowser && packet.PType != PacketType.CreateTab)
+            if (!hasActiveBrowser
+                && packet.PType != PacketType.CreateTab
+                && packet.PType != PacketType.ClientEnvironment)
                 return DispatchResult.IgnoredNoBrowser;
 
             switch (packet.PType)
@@ -154,6 +157,18 @@ namespace BrowserServer
                         commands.SizeChange(width, height, scale);
                     else
                         return DispatchResult.IgnoredMalformed;
+                    return DispatchResult.Handled;
+
+                case PacketType.ClientEnvironment:
+                    try
+                    {
+                        var env = WebSocketJsonProtocol.DeserializeNested<ClientEnvironmentPayload>(packet.JSONData);
+                        commands.ClientEnvironment(env);
+                    }
+                    catch
+                    {
+                        return DispatchResult.IgnoredMalformed;
+                    }
                     return DispatchResult.Handled;
 
                 case PacketType.TouchDown:

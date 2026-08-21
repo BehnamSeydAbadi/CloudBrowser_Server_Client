@@ -48,9 +48,23 @@ namespace BrowserServer
 
     /// <summary>
     /// Continue past certificate errors so https sites with odd certs still load in this local streaming setup.
+    /// Stamps Accept-Language from the connected UWP client when available.
     /// </summary>
     public class PermissiveRequestHandler : RequestHandler
     {
+        protected override IResourceRequestHandler GetResourceRequestHandler(
+            IWebBrowser chromiumWebBrowser,
+            IBrowser browser,
+            IFrame frame,
+            IRequest request,
+            bool isNavigation,
+            bool isDownload,
+            string requestInitiator,
+            ref bool disableDefaultHandling)
+        {
+            return new AcceptLanguageResourceRequestHandler();
+        }
+
         protected override bool OnCertificateError(
             IWebBrowser chromiumWebBrowser,
             IBrowser browser,
@@ -68,6 +82,22 @@ namespace BrowserServer
                 }
             }
             return true;
+        }
+    }
+
+    sealed class AcceptLanguageResourceRequestHandler : ResourceRequestHandler
+    {
+        protected override CefReturnValue OnBeforeResourceLoad(
+            IWebBrowser chromiumWebBrowser,
+            IBrowser browser,
+            IFrame frame,
+            IRequest request,
+            IRequestCallback callback)
+        {
+            var lang = ClientEnvironmentBridge.AcceptLanguage;
+            if (!string.IsNullOrWhiteSpace(lang))
+                request.SetHeaderByName("Accept-Language", lang, true);
+            return CefReturnValue.Continue;
         }
     }
 }

@@ -79,6 +79,7 @@ namespace BrowserClient
 
             themeSettings = new UISettings();
             themeSettings.ColorValuesChanged += ThemeSettings_ColorValuesChanged;
+            DisplayInformation.GetForCurrentView().OrientationChanged += DisplayInformation_OrientationChanged;
             var historyLoad = browsingHistory.EnsureLoadedAsync();
             var bookmarkLoad = bookmarks.EnsureLoadedAsync();
         }
@@ -90,6 +91,85 @@ namespace BrowserClient
                 if (!string.IsNullOrEmpty(lastTabListJson))
                     ApplyTabList(lastTabListJson);
             });
+            if (ds != null)
+                await ds.SendClientEnvironmentAsync();
+        }
+
+        private async void DisplayInformation_OrientationChanged(DisplayInformation sender, object args)
+        {
+            if (ds == null)
+                return;
+            await ds.SendClientEnvironmentAsync();
+        }
+
+        private ClientEnvironmentPayload BuildClientEnvironment()
+        {
+            var display = DisplayInformation.GetForCurrentView();
+            var bounds = Window.Current.Bounds;
+            var orientation = display.CurrentOrientation;
+            string orientationName;
+            switch (orientation)
+            {
+                case DisplayOrientations.Landscape:
+                case DisplayOrientations.LandscapeFlipped:
+                    orientationName = "landscape";
+                    break;
+                default:
+                    orientationName = "portrait";
+                    break;
+            }
+
+            var languages = Windows.System.UserProfile.GlobalizationPreferences.Languages;
+            var acceptLanguage = languages != null && languages.Count > 0
+                ? string.Join(",", languages)
+                : "en-US";
+
+            var tz = TimeZoneInfo.Local;
+            var cssW = ScaleRect.ActualWidth;
+            var cssH = ScaleRect.ActualHeight;
+
+            return new ClientEnvironmentPayload
+            {
+                cssWidth = Math.Max(1, (int)Math.Round(cssW)),
+                cssHeight = Math.Max(1, (int)Math.Round(cssH)),
+                devicePixelRatio = display.RawPixelsPerViewPixel,
+                isMobile = IsMobile,
+                acceptLanguage = acceptLanguage,
+                screenWidth = Math.Max(1, (int)Math.Round(bounds.Width)),
+                screenHeight = Math.Max(1, (int)Math.Round(bounds.Height)),
+                colorScheme = GetColorScheme(),
+                timeZone = tz.Id,
+                utcOffsetMinutes = (int)tz.GetUtcOffset(DateTime.Now).TotalMinutes,
+                orientation = orientationName
+            };
+        }
+
+        /// <summary>
+        /// ActualTheme requires IFrameworkElement6 (1809+). WM10 / older builds throw InvalidCastException.
+        /// </summary>
+        private string GetColorScheme()
+        {
+            if (ApiInformation.IsPropertyPresent("Windows.UI.Xaml.FrameworkElement", "ActualTheme"))
+            {
+                try
+                {
+                    return ActualTheme == ElementTheme.Dark ? "dark" : "light";
+                }
+                catch
+                {
+                }
+            }
+
+            var requested = Application.Current.RequestedTheme;
+            if (requested == ApplicationTheme.Dark)
+                return "dark";
+            if (requested == ApplicationTheme.Light)
+                return "light";
+
+            // RequestedTheme.Default — follow system via UISettings background luminance.
+            var bg = themeSettings.GetColorValue(UIColorType.Background);
+            var luminance = (0.299 * bg.R + 0.587 * bg.G + 0.114 * bg.B) / 255.0;
+            return luminance < 0.5 ? "dark" : "light";
         }
 
         protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -583,6 +663,15 @@ namespace BrowserClient
             ds = new WebBrowserDataSource();
             ds.Downloads.ListChanged += Downloads_ListChanged;
             ds.ProvidePwaUrls = GetPinnedHomeUrlsAsync;
+            ds.ProvideClientEnvironment = async () =>
+            {
+                var tcs = new TaskCompletionSource<ClientEnvironmentPayload>();
+                await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+                {
+                    tcs.SetResult(BuildClientEnvironment());
+                });
+                return await tcs.Task;
+            };
             ds.FrameRecived += (s, o) =>
             {
                 if (o == null)

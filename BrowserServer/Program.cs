@@ -225,6 +225,11 @@ namespace BrowserServer
                 TabManager.SetViewport(width, height, scale);
             }
 
+            public void ClientEnvironment(ClientEnvironmentPayload payload)
+            {
+                ClientEnvironmentBridge.Apply(payload);
+            }
+
             public void Touch(TouchKind kind, PointerPacket pointer)
             {
                 var browser = TabManager.ActiveBrowser;

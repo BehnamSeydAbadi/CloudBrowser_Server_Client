@@ -67,6 +67,7 @@ namespace BrowserServer.Tests
             public void NavigateBack(bool stopBeforeBlank) { }
             public void NavigateForward() { }
             public void SizeChange(int width, int height, float scale) { }
+            public void ClientEnvironment(ClientEnvironmentPayload payload) { }
             public void Touch(TouchKind kind, PointerPacket pointer) { }
             public void ClientBinary(byte[] data)
             {

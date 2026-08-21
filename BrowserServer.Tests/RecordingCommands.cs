@@ -17,6 +17,7 @@ namespace BrowserServer.Tests
         public int LastWidth;
         public int LastHeight;
         public float LastScale;
+        public ClientEnvironmentPayload LastEnvironment;
         public TouchKind? LastTouchKind;
         public PointerPacket LastPointer;
         public byte[] LastBinary;
@@ -102,6 +103,18 @@ namespace BrowserServer.Tests
             LastHeight = height;
             LastScale = scale;
             Log.Add("SizeChange");
+        }
+
+        public void ClientEnvironment(ClientEnvironmentPayload payload)
+        {
+            LastEnvironment = payload;
+            if (payload != null)
+            {
+                LastWidth = payload.cssWidth;
+                LastHeight = payload.cssHeight;
+                LastScale = (float)payload.devicePixelRatio;
+            }
+            Log.Add("ClientEnvironment");
         }
 
         public void Touch(TouchKind kind, PointerPacket pointer)
