@@ -46,10 +46,11 @@ For now your phone and your server needs to be on the same network
 - [X] History
 - [X] Bookmark
 - [X] Prior handshake meta-data transfer(from client to server)
-
+- [X] Context-Menu
+- [X] Multi-Client support (RequestContext separation)
+  
 ### What's needed
-- [ ] Context-Menu
-- [ ] Multi-Tenancy
+- [ ] Privacy security
 - [ ] In Private/Incognito
 - [ ] Microphone
 - [ ] File uploads
