@@ -45,8 +45,10 @@ For now your phone and your server needs to be on the same network
 - [X] Video playback
 - [X] History
 - [X] Bookmark
+- [X] Prior handshake meta-data transfer(from client to server)
 
 ### What's needed
+- [ ] Context-Menu
 - [ ] Multi-Tenancy
 - [ ] In Private/Incognito
 - [ ] Microphone
