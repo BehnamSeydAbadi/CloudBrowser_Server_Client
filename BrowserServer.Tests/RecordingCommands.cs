@@ -20,6 +20,7 @@ namespace BrowserServer.Tests
         public ClientEnvironmentPayload LastEnvironment;
         public PointerPacket LastPointer;
         public ContextMenuActionPayload LastContextAction;
+        public PwaSessionStartPayload LastPwaSession;
         public TouchKind? LastTouchKind;
         public byte[] LastBinary;
 
@@ -128,6 +129,12 @@ namespace BrowserServer.Tests
         {
             LastContextAction = action;
             Log.Add("ContextMenuAction");
+        }
+
+        public void PwaSessionStart(PwaSessionStartPayload payload)
+        {
+            LastPwaSession = payload;
+            Log.Add("PwaSessionStart");
         }
 
         public void Touch(TouchKind kind, PointerPacket pointer)

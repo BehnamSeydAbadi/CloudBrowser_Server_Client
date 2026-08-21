@@ -17,6 +17,8 @@ namespace BrowserServer
         public ChromiumWebBrowser Browser { get; set; }
         public string Title { get; set; }
         public string Url { get; set; }
+        /// <summary>Tile entry URL when this tab belongs to a pinned PWA.</summary>
+        public string PwaEntryUrl { get; set; }
     }
 
     public static class TabManager
@@ -79,6 +81,14 @@ namespace BrowserServer
                 if (Tabs.Count >= MaxTabs)
                     return null;
                 return CreateTabUnlocked(url ?? DefaultUrl, setActive: true);
+            }
+        }
+
+        public static System.Collections.Generic.IEnumerable<TabSession> AllSessions()
+        {
+            lock (Sync)
+            {
+                return TabOrder.Select(id => Tabs[id]).ToList();
             }
         }
 

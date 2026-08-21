@@ -333,11 +333,13 @@ namespace BrowserClient
             pendingNavigateUrl = url.Trim();
             pendingNavigateSent = false;
             SetUrlFieldText(pendingNavigateUrl);
+            CancelLongPress();
+            awaitingContextMenu = false;
             SetImmersivePinnedMode(true);
 
             if (ds != null)
             {
-                TryNavigatePendingUrl();
+                TryStartPendingPwaSession();
                 return;
             }
 
@@ -383,9 +385,9 @@ namespace BrowserClient
 
         private void NotifyDisplaySize()
         {
-            var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Low, () =>
+            // Defer until after the current layout pass — never call UpdateLayout here (re-entrancy crashes XAML).
+            var ignored = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
             {
-                browser.UpdateLayout();
                 if (ds == null || ScaleRect.ActualWidth < 1 || ScaleRect.ActualHeight < 1)
                     return;
 
@@ -395,13 +397,13 @@ namespace BrowserClient
             });
         }
 
-        private void TryNavigatePendingUrl()
+        private void TryStartPendingPwaSession()
         {
             if (pendingNavigateSent || ds == null || string.IsNullOrWhiteSpace(pendingNavigateUrl))
                 return;
 
             pendingNavigateSent = true;
-            ds.Navigate(pendingNavigateUrl);
+            var ignored = ds.StartPwaSessionAsync(pendingNavigateUrl);
         }
 
         private void LoseFocus(object sender)
@@ -853,6 +855,8 @@ namespace BrowserClient
             }
 
             ds = new WebBrowserDataSource();
+            CancelLongPress();
+            awaitingContextMenu = false;
             ds.Downloads.ListChanged += Downloads_ListChanged;
             ds.ProvidePwaUrls = GetPinnedHomeUrlsAsync;
             ds.ProvideClientEnvironment = async () =>
@@ -908,7 +912,7 @@ namespace BrowserClient
                             ds.SizeChange(
                                 new Size { Width = ScaleRect.ActualWidth, Height = ScaleRect.ActualHeight },
                                 DisplayInformation.GetForCurrentView().RawPixelsPerViewPixel);
-                            TryNavigatePendingUrl();
+                            TryStartPendingPwaSession();
                             break;
 
                         case TextPacketType.TextInputContent:
@@ -929,7 +933,7 @@ namespace BrowserClient
 
                         case TextPacketType.TabList:
                             ApplyTabList(o.text);
-                            TryNavigatePendingUrl();
+                            TryStartPendingPwaSession();
                             break;
 
                         case TextPacketType.AtHistoryRoot:

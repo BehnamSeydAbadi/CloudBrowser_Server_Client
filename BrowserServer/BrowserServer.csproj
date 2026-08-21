@@ -131,6 +131,7 @@
     <Compile Include="NetworkManager.cs" />
     <Compile Include="Packets.cs" />
     <Compile Include="WebSocketJsonProtocol.cs" />
+    <Compile Include="PwaSessionBridge.cs" />
     <Compile Include="ClientCommandDispatcher.cs" />
     <Compile Include="ClientEnvironmentBridge.cs" />
     <Compile Include="ContextMenuBridge.cs" />

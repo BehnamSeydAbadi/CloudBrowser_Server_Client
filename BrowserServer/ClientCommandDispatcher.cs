@@ -26,6 +26,7 @@ namespace BrowserServer
         void ClientEnvironment(ClientEnvironmentPayload payload);
         void ContextMenuQuery(PointerPacket pointer);
         void ContextMenuAction(ContextMenuActionPayload action);
+        void PwaSessionStart(PwaSessionStartPayload payload);
         void Touch(TouchKind kind, PointerPacket pointer);
         void ClientBinary(byte[] data);
     }
@@ -62,7 +63,8 @@ namespace BrowserServer
 
             if (!hasActiveBrowser
                 && packet.PType != PacketType.CreateTab
-                && packet.PType != PacketType.ClientEnvironment)
+                && packet.PType != PacketType.ClientEnvironment
+                && packet.PType != PacketType.PwaSessionStart)
                 return DispatchResult.IgnoredNoBrowser;
 
             switch (packet.PType)
@@ -190,6 +192,18 @@ namespace BrowserServer
                     {
                         var action = WebSocketJsonProtocol.DeserializeNested<ContextMenuActionPayload>(packet.JSONData);
                         commands.ContextMenuAction(action);
+                    }
+                    catch
+                    {
+                        return DispatchResult.IgnoredMalformed;
+                    }
+                    return DispatchResult.Handled;
+
+                case PacketType.PwaSessionStart:
+                    try
+                    {
+                        var pwaSession = WebSocketJsonProtocol.DeserializeNested<PwaSessionStartPayload>(packet.JSONData);
+                        commands.PwaSessionStart(pwaSession);
                     }
                     catch
                     {

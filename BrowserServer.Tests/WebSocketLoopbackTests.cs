@@ -70,6 +70,7 @@ namespace BrowserServer.Tests
             public void ClientEnvironment(ClientEnvironmentPayload payload) { }
             public void ContextMenuQuery(PointerPacket pointer) { }
             public void ContextMenuAction(ContextMenuActionPayload action) { }
+            public void PwaSessionStart(PwaSessionStartPayload payload) { }
             public void Touch(TouchKind kind, PointerPacket pointer) { }
             public void ClientBinary(byte[] data)
             {

@@ -80,7 +80,14 @@ namespace BrowserClient
         /// <summary>Long-press hit-test at normalized coords — JSON PointerPacket.</summary>
         ContextMenuQuery,
         /// <summary>Open tab or save image — JSON ContextMenuActionPayload.</summary>
-        ContextMenuAction
+        ContextMenuAction,
+        /// <summary>Switch to pinned PWA tab — JSON PwaSessionStartPayload.</summary>
+        PwaSessionStart
+    }
+
+    public class PwaSessionStartPayload
+    {
+        public string entryUrl;
     }
 
     public class ContextMenuOfferPayload

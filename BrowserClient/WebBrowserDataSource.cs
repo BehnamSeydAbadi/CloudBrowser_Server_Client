@@ -501,6 +501,28 @@ namespace BrowserClient
             }
         }
 
+        public async Task StartPwaSessionAsync(string entryUrl)
+        {
+            try
+            {
+                if (sock == null || sock.State != WebSocketState.Open || string.IsNullOrWhiteSpace(entryUrl))
+                    return;
+
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.PwaSessionStart,
+                    JSONData = JsonConvert.SerializeObject(new PwaSessionStartPayload
+                    {
+                        entryUrl = entryUrl.Trim()
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
+            }
+        }
+
         public async Task SendPwaInstalledAsync(IEnumerable<string> urls, bool reload)
         {
             try

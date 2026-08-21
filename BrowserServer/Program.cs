@@ -240,6 +240,13 @@ namespace BrowserServer
                 ContextMenuBridge.HandleAction(action);
             }
 
+            public void PwaSessionStart(PwaSessionStartPayload payload)
+            {
+                if (payload == null)
+                    return;
+                PwaSessionBridge.ActivateSession(payload.entryUrl);
+            }
+
             public void Touch(TouchKind kind, PointerPacket pointer)
             {
                 var browser = TabManager.ActiveBrowser;
