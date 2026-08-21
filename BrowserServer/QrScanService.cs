@@ -83,9 +83,25 @@ namespace BrowserServer
             if (TryGetHttpUrl(text, out uri))
             {
                 Console.WriteLine("QR navigate → " + uri.AbsoluteUri);
-                // Stop camera first so navigation does not fight the uplink.
+                var captureSession = MediaBridge.GetCaptureOwnerSession();
                 MediaBridge.Release(null);
-                TabManager.NavigateActive(uri.AbsoluteUri);
+                if (captureSession != null)
+                    captureSession.Tabs.NavigateActive(uri.AbsoluteUri);
+            }
+        }
+
+        private static void BroadcastDetected(string text)
+        {
+            try
+            {
+                var session = MediaBridge.GetCaptureOwnerSession();
+                if (session == null)
+                    return;
+
+                session.SendText(TextPacketType.QrDetected, text);
+            }
+            catch
+            {
             }
         }
 
@@ -187,25 +203,6 @@ namespace BrowserServer
                 return false;
 
             return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
-        }
-
-        private static void BroadcastDetected(string text)
-        {
-            try
-            {
-                var server = TabManager.Server;
-                if (server == null)
-                    return;
-
-                server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-                {
-                    PType = TextPacketType.QrDetected,
-                    text = text
-                }));
-            }
-            catch
-            {
-            }
         }
 
         private static string Truncate(string s, int max)

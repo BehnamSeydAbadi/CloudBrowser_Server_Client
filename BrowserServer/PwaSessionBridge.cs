@@ -25,12 +25,12 @@ namespace BrowserServer
             }
         }
 
-        public static TabSession FindSession(string normalizedEntryUrl)
+        public static TabSession FindSession(TabManager tabs, string normalizedEntryUrl)
         {
-            if (string.IsNullOrEmpty(normalizedEntryUrl))
+            if (tabs == null || string.IsNullOrEmpty(normalizedEntryUrl))
                 return null;
 
-            foreach (var session in TabManager.AllSessions())
+            foreach (var session in tabs.AllSessions())
             {
                 if (session != null
                     && !string.IsNullOrEmpty(session.PwaEntryUrl)
@@ -43,8 +43,12 @@ namespace BrowserServer
             return null;
         }
 
-        public static void ActivateSession(string entryUrl)
+        public static void ActivateSession(ClientSession clientSession, string entryUrl)
         {
+            if (clientSession == null)
+                return;
+
+            var tabs = clientSession.Tabs;
             var key = NormalizeEntryUrl(entryUrl);
             if (string.IsNullOrEmpty(key))
             {
@@ -52,10 +56,10 @@ namespace BrowserServer
                 return;
             }
 
-            var session = FindSession(key);
+            var session = FindSession(tabs, key);
             if (session == null)
             {
-                session = TabManager.CreateTab(key);
+                session = tabs.CreateTab(key);
                 if (session == null)
                 {
                     Console.WriteLine("PwaSessionStart failed — tab limit reached for " + key);
@@ -67,7 +71,7 @@ namespace BrowserServer
                 return;
             }
 
-            if (!TabManager.SwitchTab(session.Id))
+            if (!tabs.SwitchTab(session.Id))
             {
                 Console.WriteLine("PwaSessionStart switch failed id={0}", session.Id);
                 return;

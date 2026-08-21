@@ -87,7 +87,8 @@ namespace BrowserServer.Tests
         [Fact]
         public void Apply_StoresAcceptLanguageAndViewport()
         {
-            ClientEnvironmentBridge.Apply(new ClientEnvironmentPayload
+            var session = new ClientSession("test-ws");
+            ClientEnvironmentBridge.Apply(session, new ClientEnvironmentPayload
             {
                 cssWidth = 412,
                 cssHeight = 732,
@@ -102,8 +103,8 @@ namespace BrowserServer.Tests
                 orientation = "portrait"
             });
 
-            ClientEnvironmentBridge.AcceptLanguage.Should().Be("fr-FR,en");
-            ClientEnvironmentBridge.Latest.Should().BeEquivalentTo(new ClientEnvironmentPayload
+            session.AcceptLanguage.Should().Be("fr-FR,en");
+            session.Environment.Should().BeEquivalentTo(new ClientEnvironmentPayload
             {
                 cssWidth = 412,
                 cssHeight = 732,

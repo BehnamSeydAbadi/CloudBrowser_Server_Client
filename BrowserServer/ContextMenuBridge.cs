@@ -1,62 +1,65 @@
 using System;
 using System.Threading.Tasks;
 using CefSharp;
-using CefSharp.OffScreen;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace BrowserServer
 {
     /// <summary>
-    /// Long-press context menu: hit-test page at touch coords and broadcast an offer to the phone.
+    /// Long-press context menu: hit-test page at touch coords and send an offer to the phone.
     /// </summary>
     public static class ContextMenuBridge
     {
-        public static async Task HandleQueryAsync(PointerPacket pointer)
+        public static async Task HandleQueryAsync(ClientSession session, PointerPacket pointer)
         {
-            var browser = TabManager.ActiveBrowser;
+            if (session == null)
+                return;
+
+            var browser = session.Tabs.ActiveBrowser;
             if (browser == null || !browser.IsBrowserInitialized)
                 return;
 
-            var cssX = (float)pointer.px * TabManager.CssWidth;
-            var cssY = (float)pointer.py * TabManager.CssHeight;
+            var cssX = (float)pointer.px * session.Tabs.CssWidth;
+            var cssY = (float)pointer.py * session.Tabs.CssHeight;
             var script = BuildHitTestScript(cssX, cssY);
 
             try
             {
                 var response = await browser.EvaluateScriptAsync(script).ConfigureAwait(false);
                 var offer = ParseHitTestResult(response);
-                BroadcastOffer(offer);
+                SendOffer(session, offer);
             }
             catch (Exception ex)
             {
                 Console.WriteLine("Context menu hit-test error: " + ex.Message);
-                BroadcastOffer(new ContextMenuOfferPayload());
+                SendOffer(session, new ContextMenuOfferPayload());
             }
         }
 
-        public static void HandleAction(ContextMenuActionPayload action)
+        public static void HandleAction(ClientSession session, ContextMenuActionPayload action)
         {
-            if (action == null || string.IsNullOrWhiteSpace(action.action))
+            if (session == null || action == null || string.IsNullOrWhiteSpace(action.action))
                 return;
 
+            var tabs = session.Tabs;
             var url = (action.url ?? "").Trim();
             switch (action.action)
             {
                 case "openNewTab":
                     if (string.IsNullOrEmpty(url))
                         return;
-                    var session = TabManager.CreateTab(url);
-                    if (session != null)
-                        TabManager.ScheduleNavigate(session, url);
+                    var tab = tabs.CreateTab(url);
+                    if (tab != null)
+                        tabs.ScheduleNavigate(tab, url);
                     else
-                        TabManager.NavigateActive(url);
+                        tabs.NavigateActive(url);
                     break;
 
                 case "saveImage":
                     if (string.IsNullOrEmpty(url))
                         return;
-                    StreamingDownloadHandler.StreamUrlToClient(url, GuessImageFileName(url));
+                    StreamingDownloadHandler.StreamUrlToClient(session, url, GuessImageFileName(url));
                     break;
             }
         }
@@ -134,22 +137,15 @@ namespace BrowserServer
 })();";
         }
 
-        static void BroadcastOffer(ContextMenuOfferPayload offer)
+        static void SendOffer(ClientSession session, ContextMenuOfferPayload offer)
         {
             try
             {
-                if (TabManager.Server == null)
-                    return;
-
-                TabManager.Server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-                {
-                    PType = TextPacketType.ContextMenu,
-                    text = JsonConvert.SerializeObject(offer ?? new ContextMenuOfferPayload())
-                }));
+                session.SendText(TextPacketType.ContextMenu, JsonConvert.SerializeObject(offer ?? new ContextMenuOfferPayload()));
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Context menu broadcast error: " + ex.Message);
+                Console.WriteLine("Context menu send error: " + ex.Message);
             }
         }
 

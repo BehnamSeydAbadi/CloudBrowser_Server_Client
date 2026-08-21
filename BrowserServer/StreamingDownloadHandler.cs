@@ -73,6 +73,35 @@ namespace BrowserServer
             get { return current != null || !Pending.IsEmpty; }
         }
 
+        public static bool IsStreamingForSession(string sessionId)
+        {
+            if (string.IsNullOrEmpty(sessionId))
+                return false;
+
+            lock (FlushLock)
+            {
+                if (current != null && string.Equals(current.SessionWebSocketId, sessionId, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
+        public static void ReleaseSession(ClientSession session)
+        {
+            if (session == null)
+                return;
+
+            lock (FlushLock)
+            {
+                if (current != null
+                    && string.Equals(current.SessionWebSocketId, session.WebSocketSessionId, StringComparison.Ordinal))
+                {
+                    FailCurrent("session closed");
+                }
+            }
+        }
+
         public static void HandleClientAck(string id, int seq)
         {
             if (string.IsNullOrEmpty(id) || seq < 0)
@@ -92,15 +121,15 @@ namespace BrowserServer
         }
 
         /// <summary>Download a URL on the server and stream bytes to the phone as FILE chunks.</summary>
-        public static void StreamUrlToClient(string url, string fileName)
+        public static void StreamUrlToClient(ClientSession session, string url, string fileName)
         {
-            if (string.IsNullOrWhiteSpace(url))
+            if (session == null || string.IsNullOrWhiteSpace(url))
                 return;
 
-            var ignored = StreamUrlToClientAsync(url, fileName);
+            var ignored = StreamUrlToClientAsync(session, url, fileName);
         }
 
-        static async Task StreamUrlToClientAsync(string url, string fileName)
+        static async Task StreamUrlToClientAsync(ClientSession session, string url, string fileName)
         {
             Directory.CreateDirectory(TempRoot);
 
@@ -136,7 +165,7 @@ namespace BrowserServer
                     var mime = GuessMimeType(fileName);
                     Console.WriteLine("Image save queued id={0} bytes={1} file={2} url={3}", id, length, fileName, url);
 
-                    BroadcastText(TextPacketType.DownloadStarted, new DownloadEventPayload
+                    BroadcastText(session.WebSocketSessionId, TextPacketType.DownloadStarted, new DownloadEventPayload
                     {
                         id = id,
                         fileName = fileName,
@@ -147,7 +176,7 @@ namespace BrowserServer
                         success = true
                     });
 
-                    BroadcastText(TextPacketType.DownloadProgress, new DownloadEventPayload
+                    BroadcastText(session.WebSocketSessionId, TextPacketType.DownloadProgress, new DownloadEventPayload
                     {
                         id = id,
                         fileName = fileName,
@@ -162,6 +191,7 @@ namespace BrowserServer
                     Pending.Enqueue(new PendingStream
                     {
                         Id = id,
+                        SessionWebSocketId = session.WebSocketSessionId,
                         Path = tempPath,
                         FileName = fileName,
                         MimeType = mime,
@@ -295,6 +325,11 @@ namespace BrowserServer
             return "image/jpeg";
         }
 
+        private string GetSessionId()
+        {
+            return ClientSessionHub.GetByTabId(tabId)?.WebSocketSessionId;
+        }
+
         public static void FlushOutbound()
         {
             if (!Monitor.TryEnter(FlushLock))
@@ -302,10 +337,6 @@ namespace BrowserServer
 
             try
             {
-                var server = TabManager.Server;
-                if (server == null)
-                    return;
-
                 int sent = 0;
                 while (sent < MaxChunksPerFlush)
                 {
@@ -378,9 +409,9 @@ namespace BrowserServer
                         return;
                     }
 
-                    if (CountConnectedClients(server) <= 0)
+                    if (ClientSessionHub.Get(current.SessionWebSocketId) == null)
                     {
-                        Console.WriteLine("Download aborted — no connected clients id={0}", current.Id);
+                        Console.WriteLine("Download aborted — client session gone id={0}", current.Id);
                         FailCurrent("client disconnected");
                         return;
                     }
@@ -406,7 +437,7 @@ namespace BrowserServer
                         }
 
                         var packet = BuildChunkPacket(current.Id, current.Seq, isLast, current.Buffer, read);
-                        if (!TrySendBinaryToClients(server, packet))
+                        if (!SendBinaryToSession(current.SessionWebSocketId, packet))
                         {
                             Console.WriteLine("Download send failed id={0} seq={1}", current.Id, current.Seq);
                             FailCurrent("client disconnected");
@@ -422,7 +453,7 @@ namespace BrowserServer
                         if (current.TotalBytes > 0 && (isLast || sentSeq % 8 == 0))
                         {
                             var percent = (int)Math.Min(100, (current.BytesSent * 100) / current.TotalBytes);
-                            BroadcastText(TextPacketType.DownloadProgress, new DownloadEventPayload
+                            BroadcastText(current.SessionWebSocketId, TextPacketType.DownloadProgress, new DownloadEventPayload
                             {
                                 id = current.Id,
                                 fileName = current.FileName,
@@ -468,36 +499,14 @@ namespace BrowserServer
             }
         }
 
-        /// <summary>
-        /// Send to each open session explicitly. Returns false if nobody received the packet.
-        /// WebSocketSharp Broadcast swallows disconnects, which made 40MB transfers look "finished".
-        /// </summary>
-        private static bool TrySendBinaryToClients(WebSocketSharp.Server.WebSocketServer server, byte[] packet)
+        private static bool SendBinaryToSession(string sessionId, byte[] packet)
         {
+            if (string.IsNullOrEmpty(sessionId) || packet == null)
+                return false;
+
             try
             {
-                var host = server.WebSocketServices["/"];
-                if (host == null || host.Sessions.Count == 0)
-                    return false;
-
-                var ids = host.Sessions.ActiveIDs.ToList();
-                if (ids.Count == 0)
-                    ids = host.Sessions.IDs.ToList();
-                int ok = 0;
-                foreach (var id in ids)
-                {
-                    try
-                    {
-                        host.Sessions.SendTo(packet, id);
-                        ok++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("Download SendTo failed session={0}: {1}", id, ex.Message);
-                    }
-                }
-
-                return ok > 0;
+                return SessionMessaging.SendBinary(sessionId, packet);
             }
             catch (Exception ex)
             {
@@ -517,7 +526,7 @@ namespace BrowserServer
             try { done.Stream?.Dispose(); } catch { }
             done.Stream = null;
 
-            BroadcastText(TextPacketType.DownloadCompleted, new DownloadEventPayload
+            BroadcastText(done.SessionWebSocketId, TextPacketType.DownloadCompleted, new DownloadEventPayload
             {
                 id = done.Id,
                 fileName = done.FileName,
@@ -546,7 +555,7 @@ namespace BrowserServer
             try { failed.Stream?.Dispose(); } catch { }
             failed.Stream = null;
 
-            BroadcastText(TextPacketType.DownloadCompleted, new DownloadEventPayload
+            BroadcastText(failed.SessionWebSocketId, TextPacketType.DownloadCompleted, new DownloadEventPayload
             {
                 id = failed.Id,
                 fileName = failed.FileName,
@@ -581,6 +590,7 @@ namespace BrowserServer
             var id = Guid.NewGuid().ToString("N");
             var tempPath = Path.Combine(TempRoot, id + "_" + fileName);
 
+            var sessionId = GetSessionId();
             var active = new ActiveDownload
             {
                 Id = id,
@@ -588,12 +598,13 @@ namespace BrowserServer
                 FileName = fileName,
                 TempPath = tempPath,
                 MimeType = downloadItem.MimeType ?? "",
-                TotalBytes = downloadItem.TotalBytes
+                TotalBytes = downloadItem.TotalBytes,
+                SessionWebSocketId = sessionId
             };
             Active[downloadItem.Id] = active;
 
             Console.WriteLine("Download start tab={0} id={1} file={2}", tabId, id, fileName);
-            BroadcastText(TextPacketType.DownloadStarted, new DownloadEventPayload
+            BroadcastText(sessionId, TextPacketType.DownloadStarted, new DownloadEventPayload
             {
                 id = id,
                 fileName = fileName,
@@ -628,7 +639,7 @@ namespace BrowserServer
                 {
                     active.LastNotifiedPercent = percent;
                     var reportPercent = Math.Min(percent, 95);
-                    BroadcastText(TextPacketType.DownloadProgress, new DownloadEventPayload
+                    BroadcastText(active.SessionWebSocketId, TextPacketType.DownloadProgress, new DownloadEventPayload
                     {
                         id = active.Id,
                         fileName = active.FileName,
@@ -649,7 +660,7 @@ namespace BrowserServer
                 {
                     if (TryDelete(active.TempPath, retries: 5))
                         Console.WriteLine("Download temp deleted (cancelled): {0}", active.TempPath);
-                    BroadcastText(TextPacketType.DownloadCompleted, new DownloadEventPayload
+                    BroadcastText(active.SessionWebSocketId, TextPacketType.DownloadCompleted, new DownloadEventPayload
                     {
                         id = active.Id,
                         fileName = active.FileName,
@@ -677,7 +688,7 @@ namespace BrowserServer
                 Console.WriteLine("Download complete id={0} bytes={1} — queued for phone stream (pending={2})",
                     active.Id, length, Pending.Count + 1);
 
-                BroadcastText(TextPacketType.DownloadProgress, new DownloadEventPayload
+                BroadcastText(active.SessionWebSocketId, TextPacketType.DownloadProgress, new DownloadEventPayload
                 {
                     id = active.Id,
                     fileName = active.FileName,
@@ -692,6 +703,7 @@ namespace BrowserServer
                 Pending.Enqueue(new PendingStream
                 {
                     Id = active.Id,
+                    SessionWebSocketId = active.SessionWebSocketId,
                     Path = path,
                     FileName = active.FileName,
                     MimeType = active.MimeType,
@@ -710,7 +722,7 @@ namespace BrowserServer
             catch (Exception ex)
             {
                 Console.WriteLine("Download queue error: " + ex.Message);
-                BroadcastText(TextPacketType.DownloadCompleted, new DownloadEventPayload
+                BroadcastText(active.SessionWebSocketId, TextPacketType.DownloadCompleted, new DownloadEventPayload
                 {
                     id = active.Id,
                     fileName = active.FileName,
@@ -759,19 +771,22 @@ namespace BrowserServer
             buffer[offset + 3] = (byte)((value >> 24) & 0xFF);
         }
 
-        private static void BroadcastText(TextPacketType type, DownloadEventPayload payload)
+        private static void BroadcastText(string sessionId, TextPacketType type, DownloadEventPayload payload)
         {
+            if (string.IsNullOrEmpty(sessionId))
+                return;
+
             try
             {
-                TabManager.Server?.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
+                SessionMessaging.SendText(sessionId, new TextPacket
                 {
                     PType = type,
                     text = JsonConvert.SerializeObject(payload)
-                }));
+                });
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Download text broadcast error: " + ex.Message);
+                Console.WriteLine("Download text send error: " + ex.Message);
             }
         }
 
@@ -836,6 +851,7 @@ namespace BrowserServer
             public string FileName;
             public string TempPath;
             public string MimeType;
+            public string SessionWebSocketId;
             public long TotalBytes;
             public long ReceivedBytes;
             public int LastNotifiedPercent = -1;
@@ -844,6 +860,7 @@ namespace BrowserServer
         private sealed class PendingStream
         {
             public string Id;
+            public string SessionWebSocketId;
             public string Path;
             public string FileName;
             public string MimeType;

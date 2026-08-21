@@ -10,50 +10,55 @@ namespace BrowserServer
     /// </summary>
     public static class PwaBridge
     {
-        private static readonly object Sync = new object();
-        private static readonly HashSet<string> InstalledOrigins =
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        public static void SetInstalledUrls(IEnumerable<string> urls, bool reloadMatchingTab)
+        public static void SetInstalledUrls(ClientSession session, IEnumerable<string> urls, bool reloadMatchingTab)
         {
-            lock (Sync)
+            if (session == null)
+                return;
+
+            lock (session.PwaInstalledOrigins)
             {
-                InstalledOrigins.Clear();
+                session.PwaInstalledOrigins.Clear();
                 if (urls != null)
                 {
                     foreach (var url in urls)
                     {
                         var origin = TryGetOrigin(url);
                         if (!string.IsNullOrEmpty(origin))
-                            InstalledOrigins.Add(origin);
+                            session.PwaInstalledOrigins.Add(origin);
                     }
                 }
             }
 
-            Console.WriteLine("PWA installed origins: " + GetOriginSummary());
+            Console.WriteLine("PWA installed origins: " + GetOriginSummary(session));
 
             if (reloadMatchingTab)
-                ReloadActiveIfPinned();
+                ReloadActiveIfPinned(session);
             else
-                InjectIntoActive();
+                InjectIntoActive(session);
         }
 
-        public static bool IsInstalled(string url)
+        public static bool IsInstalled(ClientSession session, string url)
         {
+            if (session == null)
+                return false;
+
             var origin = TryGetOrigin(url);
             if (string.IsNullOrEmpty(origin))
                 return false;
-            lock (Sync)
+
+            lock (session.PwaInstalledOrigins)
             {
-                return InstalledOrigins.Contains(origin);
+                return session.PwaInstalledOrigins.Contains(origin);
             }
         }
 
-        public static void InjectShim(IFrame frame)
+        public static void InjectShim(ClientSession session, IFrame frame, TabSession activeTab)
         {
-            if (frame == null || !frame.IsValid)
+            if (session == null || frame == null || !frame.IsValid)
                 return;
-            if (!IsInstalled(frame.Url) && !(frame.IsMain && IsInstalled(TabManager.Active?.Url)))
+
+            if (!IsInstalled(session, frame.Url)
+                && !(frame.IsMain && activeTab != null && IsInstalled(session, activeTab.Url)))
                 return;
 
             try
@@ -66,27 +71,27 @@ namespace BrowserServer
             }
         }
 
-        private static void InjectIntoActive()
+        private static void InjectIntoActive(ClientSession session)
         {
             try
             {
-                var main = TabManager.ActiveBrowser?.GetMainFrame();
+                var main = session.Tabs.ActiveBrowser?.GetMainFrame();
                 if (main != null && main.IsValid)
-                    InjectShim(main);
+                    InjectShim(session, main, session.Tabs.Active);
             }
             catch
             {
             }
         }
 
-        private static void ReloadActiveIfPinned()
+        private static void ReloadActiveIfPinned(ClientSession session)
         {
             try
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null)
                     return;
-                if (!IsInstalled(browser.Address))
+                if (!IsInstalled(session, browser.Address))
                     return;
                 Console.WriteLine("PWA reload (standalone) " + browser.Address);
                 browser.Reload();
@@ -114,13 +119,13 @@ namespace BrowserServer
             }
         }
 
-        private static string GetOriginSummary()
+        private static string GetOriginSummary(ClientSession session)
         {
-            lock (Sync)
+            lock (session.PwaInstalledOrigins)
             {
-                if (InstalledOrigins.Count == 0)
+                if (session.PwaInstalledOrigins.Count == 0)
                     return "(none)";
-                return string.Join(", ", InstalledOrigins);
+                return string.Join(", ", session.PwaInstalledOrigins);
             }
         }
 

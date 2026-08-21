@@ -51,6 +51,14 @@ namespace BrowserServer
             get { lock (Sync) return captureActive; }
         }
 
+        public static ClientSession GetCaptureOwnerSession()
+        {
+            lock (Sync)
+            {
+                return ClientSessionHub.GetByTabId(activeTabId);
+            }
+        }
+
         public static void AttachToBrowser(IWebBrowser browser, string tabId)
         {
             if (browser == null)
@@ -90,7 +98,31 @@ namespace BrowserServer
 
         public static string FindTabId(IBrowser browser)
         {
-            return TabManager.ActiveTabId;
+            return ClientSessionHub.FindTabIdForBrowser(browser);
+        }
+
+        public static bool IsCaptureActiveForSession(ClientSession session)
+        {
+            if (session == null)
+                return false;
+
+            lock (Sync)
+            {
+                if (!captureActive || string.IsNullOrEmpty(activeTabId))
+                    return false;
+
+                var owner = ClientSessionHub.GetByTabId(activeTabId);
+                return owner == session;
+            }
+        }
+
+        public static void ReleaseSession(ClientSession session)
+        {
+            if (session == null)
+                return;
+
+            foreach (var tabId in session.Tabs.AllTabIds())
+                Release(tabId);
         }
 
         public static void InjectShim(IFrame frame)
@@ -269,6 +301,24 @@ namespace BrowserServer
             Release(tabId);
         }
 
+        public static void HandleClientBinary(ClientSession session, byte[] data)
+        {
+            if (session == null || data == null || data.Length < 4)
+                return;
+
+            lock (Sync)
+            {
+                if (!string.IsNullOrEmpty(activeTabId))
+                {
+                    var owner = ClientSessionHub.GetByTabId(activeTabId);
+                    if (owner != session)
+                        return;
+                }
+            }
+
+            HandleClientBinary(data);
+        }
+
         public static void HandleClientBinary(byte[] data)
         {
             if (data == null || data.Length < 4)
@@ -405,7 +455,13 @@ namespace BrowserServer
                 return;
             lastPushTick = now;
 
-            var browser = TabManager.ActiveBrowser;
+            var session = ClientSessionHub.GetByTabId(activeTabId);
+            var browser = session?.Tabs.ActiveBrowser;
+            if (browser == null && !string.IsNullOrEmpty(activeTabId))
+            {
+                var tabSession = session?.Tabs.AllSessions().FirstOrDefault(t => t.Id == activeTabId);
+                browser = tabSession?.Browser;
+            }
             if (browser == null || !browser.IsBrowserInitialized)
             {
                 Interlocked.Exchange(ref pushInFlight, 0);
@@ -479,15 +535,24 @@ namespace BrowserServer
         {
             try
             {
-                TabManager.Server?.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
+                ClientSession session;
+                lock (Sync)
+                {
+                    session = ClientSessionHub.GetByTabId(activeTabId);
+                }
+
+                if (session == null)
+                    return;
+
+                session.SendText(new TextPacket
                 {
                     PType = type,
                     text = JsonConvert.SerializeObject(payload)
-                }));
+                });
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Media text broadcast error: " + ex.Message);
+                Console.WriteLine("Media text send error: " + ex.Message);
             }
         }
 

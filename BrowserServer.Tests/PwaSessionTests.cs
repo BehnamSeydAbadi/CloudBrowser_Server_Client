@@ -34,7 +34,8 @@ namespace BrowserServer.Tests
         [Fact]
         public void FindSession_ReturnsNullWhenNoTabs()
         {
-            PwaSessionBridge.FindSession("https://missing.example/").Should().BeNull();
+            var clientSession = new ClientSession("ws-test");
+            PwaSessionBridge.FindSession(clientSession.Tabs, "https://missing.example/").Should().BeNull();
         }
 
         [Fact]

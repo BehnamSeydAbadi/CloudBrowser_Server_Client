@@ -4,6 +4,8 @@ namespace BrowserServer.Tests
 {
     sealed class RecordingCommands : IBrowserClientCommands
     {
+        public ClientSession Session { get { return null; } }
+
         public readonly List<string> Log = new List<string>();
         public string LastTabId;
         public MediaPermissionPayload LastMedia;

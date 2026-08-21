@@ -16,21 +16,31 @@ namespace BrowserServer
     public static class VideoPlaybackBridge
     {
         private static readonly object Sync = new object();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> PlayingByTab =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
         private static int sendInFlight;
         private static int lastPaintSendTick;
         private static int lastPollTick;
         private static int framesSent;
-        private static bool playing;
         private static bool loggedCodecs;
         private static ImageCodecInfo jpegCodec;
         private static MemoryStream encodeStream;
 
         public static bool IsStreaming
         {
-            get { lock (Sync) return playing; }
+            get { return !PlayingByTab.IsEmpty; }
         }
 
-        public static void Poll(IWebBrowser browser)
+        public static bool IsStreamingTab(string tabId)
+        {
+            if (string.IsNullOrEmpty(tabId))
+                return false;
+
+            bool playing;
+            return PlayingByTab.TryGetValue(tabId, out playing) && playing;
+        }
+
+        public static void Poll(string tabId, IWebBrowser browser)
         {
             if (browser == null || !browser.IsBrowserInitialized)
                 return;
@@ -52,7 +62,7 @@ namespace BrowserServer
                 var frames = cef.GetAllFrames();
                 if (frames == null || frames.Count == 0)
                 {
-                    SetPlaying(false, null);
+                    SetPlaying(tabId, false, null);
                     return;
                 }
 
@@ -64,7 +74,7 @@ namespace BrowserServer
                     if (frame == null || !frame.IsValid)
                     {
                         if (Interlocked.Decrement(ref remaining) == 0 && !anyPlaying)
-                            SetPlaying(false, null);
+                            SetPlaying(tabId, false, null);
                         continue;
                     }
 
@@ -86,7 +96,7 @@ namespace BrowserServer
                             }
 
                             if (Interlocked.Decrement(ref remaining) == 0)
-                                SetPlaying(anyPlaying, detail);
+                                SetPlaying(tabId, anyPlaying, detail);
                         });
                 }
             }
@@ -96,15 +106,20 @@ namespace BrowserServer
             }
         }
 
-        public static void HandlePaint(PaintElementType type, IntPtr buffer, int width, int height)
+        public static void HandlePaint(string tabId, PaintElementType type, IntPtr buffer, int width, int height)
         {
             if (type != PaintElementType.View || buffer == IntPtr.Zero || width < 2 || height < 2)
                 return;
-            if (!IsStreaming)
+            if (!IsStreamingTab(tabId))
                 return;
-            if (StreamingDownloadHandler.IsStreamingToClients)
+
+            var session = ClientSessionHub.GetByTabId(tabId);
+            if (session == null || session.Tabs.ActiveTabId != tabId)
                 return;
-            if (StreamingAudioHandler.PendingCount > 12)
+
+            if (StreamingDownloadHandler.IsStreamingForSession(session.WebSocketSessionId))
+                return;
+            if (StreamingAudioHandler.PendingCountForSession(session.WebSocketSessionId) > 12)
                 return;
 
             var now = Environment.TickCount;
@@ -116,10 +131,6 @@ namespace BrowserServer
             lastPaintSendTick = now;
             try
             {
-                var server = TabManager.Server;
-                if (server == null)
-                    return;
-
                 using (var bitmap = new Bitmap(width, height, 4 * width, PixelFormat.Format32bppArgb, buffer))
                 {
                     if (jpegCodec == null)
@@ -131,7 +142,7 @@ namespace BrowserServer
                     var encoderParameters = new EncoderParameters(1);
                     encoderParameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
                     bitmap.Save(encodeStream, jpegCodec ?? GetJpegCodec(), encoderParameters);
-                    server.WebSocketServices.Broadcast(encodeStream.ToArray());
+                    session.SendBinary(encodeStream.ToArray());
                 }
 
                 if (Interlocked.Increment(ref framesSent) == 1)
@@ -147,13 +158,23 @@ namespace BrowserServer
             }
         }
 
-        private static void SetPlaying(bool value, string detail)
+        private static void SetPlaying(string tabId, bool value, string detail)
         {
+            if (string.IsNullOrEmpty(tabId))
+                return;
+
             lock (Sync)
             {
-                if (playing == value)
+                bool current;
+                PlayingByTab.TryGetValue(tabId, out current);
+                if (current == value)
                     return;
-                playing = value;
+
+                if (value)
+                    PlayingByTab[tabId] = true;
+                else
+                    PlayingByTab.TryRemove(tabId, out _);
+
                 if (value)
                 {
                     framesSent = 0;

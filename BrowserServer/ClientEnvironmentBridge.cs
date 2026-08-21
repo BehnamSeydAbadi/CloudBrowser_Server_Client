@@ -10,35 +10,18 @@ namespace BrowserServer
     /// </summary>
     public static class ClientEnvironmentBridge
     {
-        private static readonly object Sync = new object();
-        private static ClientEnvironmentPayload latest;
-        private static string acceptLanguage = "en-US,en";
-
-        public static string AcceptLanguage
+        public static void Apply(ClientSession session, ClientEnvironmentPayload payload)
         {
-            get { lock (Sync) return acceptLanguage; }
-        }
-
-        public static ClientEnvironmentPayload Latest
-        {
-            get { lock (Sync) return latest; }
-        }
-
-        public static void Apply(ClientEnvironmentPayload payload)
-        {
-            if (payload == null)
+            if (session == null || payload == null)
                 return;
 
-            lock (Sync)
-            {
-                latest = payload;
-                if (!string.IsNullOrWhiteSpace(payload.acceptLanguage))
-                    acceptLanguage = payload.acceptLanguage.Trim();
-            }
+            session.Environment = payload;
+            if (!string.IsNullOrWhiteSpace(payload.acceptLanguage))
+                session.AcceptLanguage = payload.acceptLanguage.Trim();
 
             if (payload.cssWidth >= 1 && payload.cssHeight >= 1)
             {
-                TabManager.SetViewport(
+                session.Tabs.SetViewport(
                     payload.cssWidth,
                     payload.cssHeight,
                     (float)payload.devicePixelRatio);
@@ -52,23 +35,18 @@ namespace BrowserServer
                 payload.screenWidth,
                 payload.screenHeight,
                 payload.orientation,
-                acceptLanguage,
+                session.AcceptLanguage,
                 payload.timeZone);
 
-            InjectIntoActive();
+            InjectIntoActive(session);
         }
 
-        public static void InjectShim(IFrame frame)
+        public static void InjectShim(ClientSession session, IFrame frame)
         {
-            if (frame == null || !frame.IsValid)
+            if (session == null || frame == null || !frame.IsValid)
                 return;
 
-            ClientEnvironmentPayload cfg;
-            lock (Sync)
-            {
-                cfg = latest;
-            }
-
+            var cfg = session.Environment;
             if (cfg == null)
                 return;
 
@@ -83,13 +61,13 @@ namespace BrowserServer
             }
         }
 
-        private static void InjectIntoActive()
+        private static void InjectIntoActive(ClientSession session)
         {
             try
             {
-                var main = TabManager.ActiveBrowser?.GetMainFrame();
+                var main = session.Tabs.ActiveBrowser?.GetMainFrame();
                 if (main != null && main.IsValid)
-                    InjectShim(main);
+                    InjectShim(session, main);
             }
             catch
             {

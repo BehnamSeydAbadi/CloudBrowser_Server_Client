@@ -33,6 +33,8 @@ namespace BrowserServer.Tests
         {
             readonly ProtocolLoopbackBehavior _owner;
 
+            public ClientSession Session { get { return null; } }
+
             public LoopbackCommands(ProtocolLoopbackBehavior owner)
             {
                 _owner = owner;

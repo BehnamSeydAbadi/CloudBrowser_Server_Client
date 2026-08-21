@@ -9,6 +9,7 @@ namespace BrowserServer
     /// </summary>
     public interface IBrowserClientCommands
     {
+        ClientSession Session { get; }
         void CreateTab();
         void CloseTab(string tabId);
         void SwitchTab(string tabId);

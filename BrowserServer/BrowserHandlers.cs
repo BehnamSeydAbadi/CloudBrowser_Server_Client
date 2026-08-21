@@ -52,6 +52,13 @@ namespace BrowserServer
     /// </summary>
     public class PermissiveRequestHandler : RequestHandler
     {
+        private readonly ClientSession owner;
+
+        public PermissiveRequestHandler(ClientSession owner)
+        {
+            this.owner = owner;
+        }
+
         protected override IResourceRequestHandler GetResourceRequestHandler(
             IWebBrowser chromiumWebBrowser,
             IBrowser browser,
@@ -62,7 +69,7 @@ namespace BrowserServer
             string requestInitiator,
             ref bool disableDefaultHandling)
         {
-            return new AcceptLanguageResourceRequestHandler();
+            return new AcceptLanguageResourceRequestHandler(owner);
         }
 
         protected override bool OnCertificateError(
@@ -87,6 +94,13 @@ namespace BrowserServer
 
     sealed class AcceptLanguageResourceRequestHandler : ResourceRequestHandler
     {
+        private readonly ClientSession owner;
+
+        public AcceptLanguageResourceRequestHandler(ClientSession owner)
+        {
+            this.owner = owner;
+        }
+
         protected override CefReturnValue OnBeforeResourceLoad(
             IWebBrowser chromiumWebBrowser,
             IBrowser browser,
@@ -94,7 +108,7 @@ namespace BrowserServer
             IRequest request,
             IRequestCallback callback)
         {
-            var lang = ClientEnvironmentBridge.AcceptLanguage;
+            var lang = owner != null ? owner.AcceptLanguage : "en-US,en";
             if (!string.IsNullOrWhiteSpace(lang))
                 request.SetHeaderByName("Accept-Language", lang, true);
             return CefReturnValue.Continue;

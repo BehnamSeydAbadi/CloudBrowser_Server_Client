@@ -17,9 +17,8 @@ namespace BrowserServer
         private static readonly object Sync = new object();
         private static readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> PendingPermission =
             new ConcurrentDictionary<string, TaskCompletionSource<bool>>();
-        // Session memory: origin → granted/denied
-        private static readonly Dictionary<string, bool> OriginDecisions =
-            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> PendingPermissionTabId =
+            new ConcurrentDictionary<string, string>();
 
         public static void AttachToBrowser(IWebBrowser browser, string tabId)
         {
@@ -70,7 +69,7 @@ namespace BrowserServer
             }
         }
 
-        public static void InjectShim(IFrame frame)
+        public static void InjectShim(string tabId, IFrame frame)
         {
             if (frame == null || !frame.IsValid)
                 return;
@@ -78,7 +77,7 @@ namespace BrowserServer
             try
             {
                 var origin = TryGetOrigin(frame.Url);
-                var perm = GetPermissionState(origin);
+                var perm = GetPermissionState(tabId, origin);
                 var script = NotificationShimScript.Replace("{{PERMISSION}}", perm);
                 frame.ExecuteJavaScriptAsync(script);
             }
@@ -88,15 +87,19 @@ namespace BrowserServer
             }
         }
 
-        public static string GetPermissionState(string origin)
+        public static string GetPermissionState(string tabId, string origin)
         {
             if (string.IsNullOrEmpty(origin))
                 return "default";
 
-            lock (Sync)
+            var session = ClientSessionHub.GetByTabId(tabId);
+            if (session == null)
+                return "default";
+
+            lock (session.NotificationOrigins)
             {
                 bool allowed;
-                if (!OriginDecisions.TryGetValue(origin, out allowed))
+                if (!session.NotificationOrigins.TryGetValue(origin, out allowed))
                     return "default";
                 return allowed ? "granted" : "denied";
             }
@@ -108,23 +111,35 @@ namespace BrowserServer
 
             lock (Sync)
             {
-                bool allowed;
-                if (OriginDecisions.TryGetValue(origin, out allowed))
+                var session = ClientSessionHub.GetByTabId(tabId);
+                if (session != null)
                 {
-                    Console.WriteLine("Notification permission cached origin={0} → {1}", origin, allowed ? "granted" : "denied");
-                    return Task.FromResult(allowed ? "granted" : "denied");
+                    lock (session.NotificationOrigins)
+                    {
+                        bool allowed;
+                        if (session.NotificationOrigins.TryGetValue(origin, out allowed))
+                        {
+                            Console.WriteLine("Notification permission cached origin={0} → {1}", origin, allowed ? "granted" : "denied");
+                            return Task.FromResult(allowed ? "granted" : "denied");
+                        }
+                    }
                 }
             }
 
             var requestId = Guid.NewGuid().ToString("N");
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             PendingPermission[requestId] = tcs;
+            PendingPermissionTabId[requestId] = tabId;
 
             Console.WriteLine("Notification permission → phone id={0} origin={1}", requestId, origin);
 
             try
             {
-                TabManager.Server?.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
+                var session = ClientSessionHub.GetByTabId(tabId);
+                if (session == null)
+                    throw new InvalidOperationException("no session for tab");
+
+                session.SendText(new TextPacket
                 {
                     PType = TextPacketType.NotificationPermissionRequest,
                     text = JsonConvert.SerializeObject(new NotificationPermissionPayload
@@ -132,7 +147,7 @@ namespace BrowserServer
                         requestId = requestId,
                         origin = origin
                     })
-                }));
+                });
             }
             catch (Exception ex)
             {
@@ -171,10 +186,15 @@ namespace BrowserServer
             }
 
             var origin = payload.origin ?? "";
-            lock (Sync)
+            string tabId;
+            PendingPermissionTabId.TryRemove(payload.requestId, out tabId);
+            var session = !string.IsNullOrEmpty(tabId) ? ClientSessionHub.GetByTabId(tabId) : null;
+            if (session != null && !string.IsNullOrEmpty(origin))
             {
-                if (!string.IsNullOrEmpty(origin))
-                    OriginDecisions[origin] = payload.allowed;
+                lock (session.NotificationOrigins)
+                {
+                    session.NotificationOrigins[origin] = payload.allowed;
+                }
             }
 
             Console.WriteLine(
@@ -193,13 +213,17 @@ namespace BrowserServer
             // Block show if this origin was explicitly denied.
             if (!string.IsNullOrEmpty(origin))
             {
-                lock (Sync)
+                var session = ClientSessionHub.GetByTabId(tabId);
+                if (session != null)
                 {
-                    bool allowed;
-                    if (OriginDecisions.TryGetValue(origin, out allowed) && !allowed)
+                    lock (session.NotificationOrigins)
                     {
-                        Console.WriteLine("Notification blocked (denied) origin=" + origin);
-                        return;
+                        bool allowed;
+                        if (session.NotificationOrigins.TryGetValue(origin, out allowed) && !allowed)
+                        {
+                            Console.WriteLine("Notification blocked (denied) origin=" + origin);
+                            return;
+                        }
                     }
                 }
             }
@@ -212,7 +236,11 @@ namespace BrowserServer
 
             try
             {
-                TabManager.Server?.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
+                var session = ClientSessionHub.GetByTabId(tabId);
+                if (session == null)
+                    return;
+
+                session.SendText(new TextPacket
                 {
                     PType = TextPacketType.Notification,
                     text = JsonConvert.SerializeObject(new NotificationPayload
@@ -224,7 +252,7 @@ namespace BrowserServer
                         icon = icon ?? "",
                         url = url ?? ""
                     })
-                }));
+                });
             }
             catch (Exception ex)
             {
@@ -468,7 +496,7 @@ namespace BrowserServer
 
         public Task<string> GetPermission(string origin)
         {
-            return Task.FromResult(NotificationBridge.GetPermissionState(origin));
+            return Task.FromResult(NotificationBridge.GetPermissionState(tabId, origin));
         }
     }
 }

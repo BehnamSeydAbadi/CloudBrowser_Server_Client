@@ -15,11 +15,7 @@ namespace BrowserServer
 
         public static void Apply(ChromiumWebBrowser browser)
         {
-            if (browser == null)
-                return;
-
-            browser.DeviceScaleFactor = TabManager.DeviceScaleFactor;
-            browser.Size = TabManager.BrowserSize;
+            // Viewport is set by TabManager before Apply is called.
         }
     }
 }

@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
-using WebSocketSharp.Server;
 
 namespace BrowserServer
 {
@@ -21,41 +20,45 @@ namespace BrowserServer
         public string PwaEntryUrl { get; set; }
     }
 
-    public static class TabManager
+    public class TabManager
     {
         public const int MaxTabs = 8;
         public const string DefaultUrl = "about:blank";
 
-        private static readonly object Sync = new object();
-        private static readonly Dictionary<string, TabSession> Tabs = new Dictionary<string, TabSession>();
-        private static readonly List<string> TabOrder = new List<string>();
+        private readonly ClientSession owner;
+        private readonly object sync = new object();
+        private readonly Dictionary<string, TabSession> tabs = new Dictionary<string, TabSession>();
+        private readonly List<string> tabOrder = new List<string>();
 
-        public static string ActiveTabId { get; private set; }
+        public string ActiveTabId { get; private set; }
         /// <summary>CSS viewport = BrowserClient ScaleRect (page displayer), excluding navbars.</summary>
-        public static int CssWidth { get; private set; } = 360;
-        public static int CssHeight { get; private set; } = 640;
-        public static float DeviceScaleFactor { get; private set; } = 2f;
+        public int CssWidth { get; private set; } = 360;
+        public int CssHeight { get; private set; } = 640;
+        public float DeviceScaleFactor { get; private set; } = 2f;
         /// <summary>Equals Css size — CEF GetViewRect uses Size as the CSS viewport.</summary>
-        public static Size BrowserSize { get; private set; } = new Size(360, 640);
-        public static WebSocketServer Server { get; set; }
-        public static Func<ChromiumWebBrowser, string, DefaultRenderHandler> CreateRenderHandler { get; set; }
-        /// <summary>Invoked when the active tab changes (new tab, switch, close).</summary>
-        public static Action ActiveTabChanged;
+        public Size BrowserSize { get; private set; } = new Size(360, 640);
 
-        public static TabSession Active
+        public TabManager(ClientSession owner)
+        {
+            if (owner == null)
+                throw new ArgumentNullException("owner");
+            this.owner = owner;
+        }
+
+        public TabSession Active
         {
             get
             {
-                lock (Sync)
+                lock (sync)
                 {
-                    if (ActiveTabId != null && Tabs.TryGetValue(ActiveTabId, out var session))
+                    if (ActiveTabId != null && tabs.TryGetValue(ActiveTabId, out var session))
                         return session;
                     return null;
                 }
             }
         }
 
-        public static ChromiumWebBrowser ActiveBrowser
+        public ChromiumWebBrowser ActiveBrowser
         {
             get
             {
@@ -64,55 +67,79 @@ namespace BrowserServer
             }
         }
 
-        public static TabSession EnsureInitialTab()
+        public TabSession EnsureInitialTab()
         {
-            lock (Sync)
+            lock (sync)
             {
-                if (Tabs.Count == 0)
+                if (tabs.Count == 0)
                     return CreateTabUnlocked(DefaultUrl, setActive: true);
-                return Tabs[ActiveTabId];
+                return tabs[ActiveTabId];
             }
         }
 
-        public static TabSession CreateTab(string url = null)
+        public TabSession CreateTab(string url = null)
         {
-            lock (Sync)
+            lock (sync)
             {
-                if (Tabs.Count >= MaxTabs)
+                if (tabs.Count >= MaxTabs)
                     return null;
                 return CreateTabUnlocked(url ?? DefaultUrl, setActive: true);
             }
         }
 
-        public static System.Collections.Generic.IEnumerable<TabSession> AllSessions()
+        public IEnumerable<TabSession> AllSessions()
         {
-            lock (Sync)
+            lock (sync)
             {
-                return TabOrder.Select(id => Tabs[id]).ToList();
+                return tabOrder.Select(id => tabs[id]).ToList();
             }
         }
 
-        private static TabSession CreateTabUnlocked(string url, bool setActive)
+        public IEnumerable<string> AllTabIds()
+        {
+            lock (sync)
+            {
+                return tabOrder.ToList();
+            }
+        }
+
+        public void DisposeAll()
+        {
+            List<TabSession> toDispose;
+            lock (sync)
+            {
+                toDispose = tabOrder.Select(id => tabs[id]).ToList();
+                tabs.Clear();
+                tabOrder.Clear();
+                ActiveTabId = null;
+            }
+
+            foreach (var session in toDispose)
+                DisposeBrowser(session);
+        }
+
+        private TabSession CreateTabUnlocked(string url, bool setActive)
         {
             var id = Guid.NewGuid().ToString("N");
             var loadUrl = string.IsNullOrWhiteSpace(url) ? DefaultUrl : url.Trim();
             // Create browser manually so JS media bridge can register before CEF spins up.
+            var requestContext = owner.EnsureBrowserContext().Context;
             var browser = new ChromiumWebBrowser(
                 address: loadUrl,
                 browserSettings: null,
-                requestContext: null,
+                requestContext: requestContext,
                 automaticallyCreateBrowser: false);
             browser.DeviceScaleFactor = DeviceScaleFactor;
             browser.Size = BrowserSize;
             browser.LifeSpanHandler = new SameTabLifeSpanHandler();
-            browser.RequestHandler = new PermissiveRequestHandler();
+            browser.RequestHandler = new PermissiveRequestHandler(owner);
             browser.AudioHandler = new StreamingAudioHandler(id);
             browser.DownloadHandler = new StreamingDownloadHandler(id);
             MediaBridge.AttachToBrowser(browser, id);
             NotificationBridge.AttachToBrowser(browser, id);
             MobileChromeIdentity.Apply(browser);
-            if (CreateRenderHandler != null)
-                browser.RenderHandler = CreateRenderHandler(browser, id);
+            if (ClientSessionHub.CreateRenderHandler != null)
+                browser.RenderHandler = ClientSessionHub.CreateRenderHandler(browser, id);
             browser.CreateBrowser();
 
             var session = new TabSession
@@ -140,11 +167,11 @@ namespace BrowserServer
                     Console.WriteLine("Loaded: " + e.Url);
                 // Inject into iframes too — many camera testers host getUserMedia off-main-frame.
                 MediaBridge.InjectShim(e.Frame);
-                NotificationBridge.InjectShim(e.Frame);
-                PwaBridge.InjectShim(e.Frame);
-                ClientEnvironmentBridge.InjectShim(e.Frame);
+                NotificationBridge.InjectShim(session.Id, e.Frame);
+                PwaBridge.InjectShim(owner, e.Frame, session);
+                ClientEnvironmentBridge.InjectShim(owner, e.Frame);
                 if (e.Frame.IsMain)
-                    VideoPlaybackBridge.Poll(browser);
+                    VideoPlaybackBridge.Poll(session.Id, browser);
             };
 
             browser.FrameLoadStart += (s, e) =>
@@ -152,14 +179,16 @@ namespace BrowserServer
                 if (e.Frame != null && e.Frame.IsValid)
                 {
                     MediaBridge.InjectShim(e.Frame);
-                    NotificationBridge.InjectShim(e.Frame);
-                    PwaBridge.InjectShim(e.Frame);
-                    ClientEnvironmentBridge.InjectShim(e.Frame);
+                    NotificationBridge.InjectShim(session.Id, e.Frame);
+                    PwaBridge.InjectShim(owner, e.Frame, session);
+                    ClientEnvironmentBridge.InjectShim(owner, e.Frame);
                 }
             };
 
-            Tabs[id] = session;
-            TabOrder.Add(id);
+            tabs[id] = session;
+            tabOrder.Add(id);
+            ClientSessionHub.RegisterTab(id, owner);
+
             if (setActive)
             {
                 ActiveTabId = id;
@@ -168,12 +197,12 @@ namespace BrowserServer
             }
 
             ScheduleNavigate(session, loadUrl);
-            BroadcastTabList();
+            SendTabList();
             return session;
         }
 
         /// <summary>Load a URL once CEF is ready (Load before init is silently ignored).</summary>
-        public static void ScheduleNavigate(TabSession session, string url)
+        public void ScheduleNavigate(TabSession session, string url)
         {
             if (session?.Browser == null || string.IsNullOrWhiteSpace(url))
                 return;
@@ -216,18 +245,18 @@ namespace BrowserServer
             }, null, 50, 50);
         }
 
-        static void NotifyActiveTabChanged()
+        void NotifyActiveTabChanged()
         {
             try
             {
-                ActiveTabChanged?.Invoke();
+                owner.ResetCaptureState();
             }
             catch
             {
             }
         }
 
-        static void RequestRepaint(TabSession session)
+        void RequestRepaint(TabSession session)
         {
             try
             {
@@ -242,63 +271,63 @@ namespace BrowserServer
             }
         }
 
-        public static bool SwitchTab(string tabId)
+        public bool SwitchTab(string tabId)
         {
-            lock (Sync)
+            lock (sync)
             {
-                if (!Tabs.ContainsKey(tabId))
+                if (!tabs.ContainsKey(tabId))
                     return false;
 
                 ActiveTabId = tabId;
-                var session = Tabs[tabId];
+                var session = tabs[tabId];
                 session.Browser.DeviceScaleFactor = DeviceScaleFactor;
                 session.Browser.Size = BrowserSize;
                 NotifyActiveTabChanged();
                 RequestRepaint(session);
-                BroadcastTabList();
-                BroadcastNavigatedUrl(session.Url);
+                SendTabList();
+                SendNavigatedUrl(session.Url);
                 return true;
             }
         }
 
-        public static bool CloseTab(string tabId)
+        public bool CloseTab(string tabId)
         {
             TabSession removed = null;
-            lock (Sync)
+            lock (sync)
             {
-                if (!Tabs.TryGetValue(tabId, out removed))
+                if (!tabs.TryGetValue(tabId, out removed))
                     return false;
 
-                var index = TabOrder.IndexOf(tabId);
-                Tabs.Remove(tabId);
-                TabOrder.Remove(tabId);
+                var index = tabOrder.IndexOf(tabId);
+                tabs.Remove(tabId);
+                tabOrder.Remove(tabId);
 
-                if (Tabs.Count == 0)
+                if (tabs.Count == 0)
                 {
                     CreateTabUnlocked(DefaultUrl, setActive: true);
                 }
                 else if (ActiveTabId == tabId)
                 {
-                    var nextIndex = Math.Min(Math.Max(index, 0), TabOrder.Count - 1);
-                    ActiveTabId = TabOrder[nextIndex];
-                    Tabs[ActiveTabId].Browser.DeviceScaleFactor = DeviceScaleFactor;
-                    Tabs[ActiveTabId].Browser.Size = BrowserSize;
-                    BroadcastNavigatedUrl(Tabs[ActiveTabId].Url);
+                    var nextIndex = Math.Min(Math.Max(index, 0), tabOrder.Count - 1);
+                    ActiveTabId = tabOrder[nextIndex];
+                    tabs[ActiveTabId].Browser.DeviceScaleFactor = DeviceScaleFactor;
+                    tabs[ActiveTabId].Browser.Size = BrowserSize;
+                    SendNavigatedUrl(tabs[ActiveTabId].Url);
                 }
 
-                BroadcastTabList();
+                SendTabList();
             }
 
             DisposeBrowser(removed);
             return true;
         }
 
-        private static int pendingCssW;
-        private static int pendingCssH;
-        private static float pendingScale;
-        private static Timer viewportDebounceTimer;
+        private int pendingCssW;
+        private int pendingCssH;
+        private float pendingScale;
+        private Timer viewportDebounceTimer;
 
-        public static void NavigateActive(string url)
+        public void NavigateActive(string url)
         {
             if (string.IsNullOrWhiteSpace(url))
                 return;
@@ -322,7 +351,7 @@ namespace BrowserServer
             }
         }
 
-        public static void SetViewport(int cssWidth, int cssHeight, float deviceScaleFactor)
+        public void SetViewport(int cssWidth, int cssHeight, float deviceScaleFactor)
         {
             if (cssWidth < 1 || cssHeight < 1)
                 return;
@@ -342,14 +371,14 @@ namespace BrowserServer
             }
         }
 
-        private static void ApplyPendingViewport()
+        private void ApplyPendingViewport()
         {
             ChromiumWebBrowser active;
             int cssWidth;
             int cssHeight;
             float deviceScaleFactor;
 
-            lock (Sync)
+            lock (sync)
             {
                 cssWidth = pendingCssW;
                 cssHeight = pendingCssH;
@@ -380,7 +409,7 @@ namespace BrowserServer
         /// <summary>
         /// After client reconnect, poke the active browser so painting resumes if it stalled.
         /// </summary>
-        public static void EnsureActiveBrowserHealthy()
+        public void EnsureActiveBrowserHealthy()
         {
             var browser = ActiveBrowser;
             if (browser == null)
@@ -413,20 +442,17 @@ namespace BrowserServer
             }
         }
 
-        public static void BroadcastTabList()
+        public void SendTabList()
         {
-            if (Server == null)
-                return;
-
             TabListPayload payload;
-            lock (Sync)
+            lock (sync)
             {
                 payload = new TabListPayload
                 {
                     activeId = ActiveTabId,
-                    tabs = TabOrder.Select(id =>
+                    tabs = tabOrder.Select(id =>
                     {
-                        var t = Tabs[id];
+                        var t = tabs[id];
                         return new TabInfo
                         {
                             id = t.Id,
@@ -437,37 +463,29 @@ namespace BrowserServer
                 };
             }
 
-            Server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-            {
-                PType = TextPacketType.TabList,
-                text = JsonConvert.SerializeObject(payload)
-            }));
+            owner.SendText(TextPacketType.TabList, JsonConvert.SerializeObject(payload));
         }
 
-        public static void BroadcastNavigatedUrl(string url)
+        public void SendNavigatedUrl(string url)
         {
-            if (Server == null || url == null)
+            if (url == null)
                 return;
 
-            Server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-            {
-                PType = TextPacketType.NavigatedUrl,
-                text = url
-            }));
+            owner.SendText(TextPacketType.NavigatedUrl, url);
         }
 
-        private static void OnLoadingStateChanged(TabSession session, LoadingStateChangedEventArgs e)
+        private void OnLoadingStateChanged(TabSession session, LoadingStateChangedEventArgs e)
         {
             session.Url = session.Browser.Address ?? session.Url;
             bool isActive;
-            lock (Sync)
+            lock (sync)
             {
                 isActive = session.Id == ActiveTabId;
             }
 
-            BroadcastTabList();
+            SendTabList();
             if (isActive)
-                BroadcastNavigatedUrl(session.Url);
+                SendNavigatedUrl(session.Url);
 
             if (!e.IsLoading)
             {
@@ -478,9 +496,9 @@ namespace BrowserServer
                     if (main != null && main.IsValid)
                     {
                         MediaBridge.InjectShim(main);
-                        NotificationBridge.InjectShim(main);
-                        PwaBridge.InjectShim(main);
-                        ClientEnvironmentBridge.InjectShim(main);
+                        NotificationBridge.InjectShim(session.Id, main);
+                        PwaBridge.InjectShim(owner, main, session);
+                        ClientEnvironmentBridge.InjectShim(owner, main);
                     }
                 }
                 catch
@@ -489,36 +507,37 @@ namespace BrowserServer
             }
         }
 
-        private static void OnAddressChanged(TabSession session, AddressChangedEventArgs e)
+        private void OnAddressChanged(TabSession session, AddressChangedEventArgs e)
         {
             session.Url = e.Address ?? session.Url;
             bool isActive;
-            lock (Sync)
+            lock (sync)
             {
                 isActive = session.Id == ActiveTabId;
             }
 
-            BroadcastTabList();
+            SendTabList();
             if (isActive)
             {
-                BroadcastNavigatedUrl(session.Url);
+                SendNavigatedUrl(session.Url);
                 MediaBridge.OnNavigated(session.Id, session.Url);
             }
         }
 
-        private static void OnTitleChanged(TabSession session, TitleChangedEventArgs e)
+        private void OnTitleChanged(TabSession session, TitleChangedEventArgs e)
         {
             session.Title = e.Title;
-            BroadcastTabList();
+            SendTabList();
         }
 
-        private static void DisposeBrowser(TabSession session)
+        private void DisposeBrowser(TabSession session)
         {
             if (session?.Browser == null)
                 return;
 
             try
             {
+                ClientSessionHub.UnregisterTab(session.Id);
                 MediaBridge.Release(session.Id);
                 session.Browser.Dispose();
             }

@@ -18,21 +18,44 @@ namespace BrowserServer
         public class test : WebSocketBehavior, IBrowserClientCommands
         {
             //tested on 950XL
-            public static int ScalingFactor = 2;
+            public int ScalingFactor = 2;
+            ClientSession session;
+
+            public ClientSession Session
+            {
+                get { return session; }
+            }
+
             protected override void OnOpen()
             {
-                // Client (re)connected — clear any stuck frame-capture lock from a previous session.
-                ResetCaptureState();
-                TabManager.EnsureInitialTab();
-                TabManager.EnsureActiveBrowserHealthy();
-                TabManager.BroadcastTabList();
-                var active = TabManager.Active;
+                session = ClientSessionHub.Create(ID);
+                if (session == null)
+                {
+                    Console.WriteLine("Max sessions reached — rejecting " + ID);
+                    Context.WebSocket.Close(CloseStatusCode.PolicyViolation, "Max sessions");
+                    return;
+                }
+
+                session.ResetCaptureState();
+                session.Tabs.EnsureInitialTab();
+                session.Tabs.EnsureActiveBrowserHealthy();
+                session.SendTabList();
+                var active = session.Tabs.Active;
                 if (active != null)
-                    TabManager.BroadcastNavigatedUrl(active.Url);
+                    session.SendNavigatedUrl(active.Url);
+            }
+
+            protected override void OnClose(CloseEventArgs e)
+            {
+                ClientSessionHub.Remove(ID);
+                session = null;
             }
 
             protected override void OnMessage(MessageEventArgs e)
             {
+                if (session == null)
+                    return;
+
                 if (e.IsBinary)
                 {
                     ClientCommandDispatcher.DispatchBinary(e.RawData, this);
@@ -41,24 +64,24 @@ namespace BrowserServer
 
                 ClientCommandDispatcher.DispatchText(
                     e.Data,
-                    TabManager.ActiveBrowser != null,
+                    session.Tabs.ActiveBrowser != null,
                     ScalingFactor,
                     this);
             }
 
             public void CreateTab()
             {
-                TabManager.CreateTab();
+                session.Tabs.CreateTab();
             }
 
             public void CloseTab(string tabId)
             {
-                TabManager.CloseTab(tabId);
+                session.Tabs.CloseTab(tabId);
             }
 
             public void SwitchTab(string tabId)
             {
-                TabManager.SwitchTab(tabId);
+                session.Tabs.SwitchTab(tabId);
             }
 
             public void MediaPermissionResponse(MediaPermissionPayload payload)
@@ -73,12 +96,12 @@ namespace BrowserServer
 
             public void PwaInstalled(PwaInstallPayload payload)
             {
-                PwaBridge.SetInstalledUrls(payload != null ? payload.urls : null, payload != null && payload.reload);
+                PwaBridge.SetInstalledUrls(session, payload != null ? payload.urls : null, payload != null && payload.reload);
             }
 
             public void TextInputSend(string text)
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null)
                     return;
 
@@ -109,7 +132,7 @@ namespace BrowserServer
 
             public void SendKey(SendKeyCommand key)
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null || key == null)
                     return;
 
@@ -189,7 +212,7 @@ namespace BrowserServer
 
             public void Navigate(string input)
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null)
                     return;
 
@@ -207,49 +230,49 @@ namespace BrowserServer
 
             public void NavigateBack(bool stopBeforeBlank)
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null)
                     return;
-                var ignored = HandleNavigateBackAsync(browser, stopBeforeBlank);
+                var ignored = HandleNavigateBackAsync(session, browser, stopBeforeBlank);
             }
 
             public void NavigateForward()
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser != null && browser.CanGoForward)
                     browser.Forward();
             }
 
             public void SizeChange(int width, int height, float scale)
             {
-                TabManager.SetViewport(width, height, scale);
+                session.Tabs.SetViewport(width, height, scale);
             }
 
             public void ClientEnvironment(ClientEnvironmentPayload payload)
             {
-                ClientEnvironmentBridge.Apply(payload);
+                ClientEnvironmentBridge.Apply(session, payload);
             }
 
             public void ContextMenuQuery(PointerPacket pointer)
             {
-                var ignored = ContextMenuBridge.HandleQueryAsync(pointer);
+                var ignored = ContextMenuBridge.HandleQueryAsync(session, pointer);
             }
 
             public void ContextMenuAction(ContextMenuActionPayload action)
             {
-                ContextMenuBridge.HandleAction(action);
+                ContextMenuBridge.HandleAction(session, action);
             }
 
             public void PwaSessionStart(PwaSessionStartPayload payload)
             {
                 if (payload == null)
                     return;
-                PwaSessionBridge.ActivateSession(payload.entryUrl);
+                PwaSessionBridge.ActivateSession(session, payload.entryUrl);
             }
 
             public void Touch(TouchKind kind, PointerPacket pointer)
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null)
                     return;
 
@@ -281,49 +304,43 @@ namespace BrowserServer
 
             public void ClientBinary(byte[] data)
             {
-                MediaBridge.HandleClientBinary(data);
+                MediaBridge.HandleClientBinary(session, data);
             }
         }
 
         static WebSocketServer server;
+        static readonly JpegRenderEncoder jpegEncoder = new JpegRenderEncoder();
 
         static void Main(string[] margs)
         {
             server = new WebSocketServer("ws://0.0.0.0:8081");
-            //ngrok compatible ngrok.exe tcp 8081 -> 
             server.AllowForwardedRequest = true;
             server.AddWebSocketService<test>("/");
             server.Start();
 
-            TabManager.Server = server;
-            TabManager.CreateRenderHandler = (browser, tabId) => new TestRHI(browser, tabId);
-            TabManager.ActiveTabChanged = ResetCaptureState;
+            SessionMessaging.Server = server;
+            ClientSessionHub.CreateRenderHandler = (browser, tabId) => new TestRHI(browser, tabId);
 
-            const string testUrl = "about:blank";
             var cefRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp133");
+            CefPaths.Root = cefRoot;
             var settings = new CefSettings()
             {
                 RootCachePath = cefRoot,
                 CachePath = Path.Combine(cefRoot, "Cache"),
                 BrowserSubprocessPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "CefSharp.BrowserSubprocess.exe"),
-                // Real Android Google Chrome UA (Chrome still includes AppleWebKit tokens by design).
                 UserAgent = MobileChromeIdentity.UserAgent,
                 AcceptLanguageList = "en-US,en",
             };
 
             settings.CefCommandLineArgs["touch-events"] = "enabled";
-            // Disable GPU in offscreen — reduces crashes on heavy sites (maps, modern SPAs).
             settings.CefCommandLineArgs["disable-gpu"] = "1";
             settings.CefCommandLineArgs["disable-gpu-compositing"] = "1";
-            // Allow media autoplay so remote audio/video can start without a desktop gesture.
             settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
-            // OffScreen CefSettings adds "mute-audio" by default; without this, AudioHandler never fires.
             settings.EnableAudio();
             if (settings.CefCommandLineArgs.ContainsKey("mute-audio"))
                 settings.CefCommandLineArgs.Remove("mute-audio");
             CefSharpSettings.ConcurrentTaskExecution = true;
 
-            // Phone camera/mic bridge — fetchable from https pages (treated as secure).
             settings.RegisterScheme(new CefCustomScheme
             {
                 SchemeName = "cbmedia",
@@ -342,10 +359,9 @@ namespace BrowserServer
             Cef.Initialize(settings, performDependencyCheck: true, browserProcessHandler: null);
             StreamingDownloadHandler.PurgeTempFolder();
 
-            TabManager.CreateTab(testUrl);
-
             Console.Clear();
             Console.WriteLine("Browser server is now running, you can connect to it via ws://" + NetworkManager.GetLocalIPAddress() + ":8081");
+            Console.WriteLine("Per-client sessions: up to " + ClientSessionHub.MaxSessions + " isolated browser instances");
             Console.WriteLine("Audio capture: ENABLED (expect 'Audio start' when a page plays sound)");
             Console.WriteLine("Video playback: H.264/AAC ENABLED (CefSharp.H264.x64 133) — page video streams like audio");
             Console.WriteLine("Phone camera/mic: ENABLED (sites calling getUserMedia prompt on the client)");
@@ -368,8 +384,7 @@ namespace BrowserServer
             Console.WriteLine("9. congratulations! you just connected over the internet");
 
             NetworkManager.StartUdpDiscoveryServer();
-            // Poll ~30fps; unchanged pages are skipped so motion can use the extra budget.
-            var timer = new Timer(Callback, null, 0, 33);
+            var timer = new Timer(CaptureAllSessions, null, 0, 33);
             var audioTimer = new Timer(_ => StreamingAudioHandler.FlushOutbound(), null, 0, 10);
             var downloadTimer = new Timer(_ => StreamingDownloadHandler.FlushOutbound(), null, 0, 25);
 
@@ -381,81 +396,72 @@ namespace BrowserServer
             timer.Dispose();
         }
 
-        static readonly RenderFrameSession frameSession = new RenderFrameSession();
-        static readonly JpegRenderEncoder jpegEncoder = new JpegRenderEncoder();
-
-        public static void ResetCaptureState()
+        static void CaptureAllSessions(object state)
         {
-            frameSession.Reset();
+            foreach (var session in ClientSessionHub.AllActive())
+                CaptureSession(session);
         }
 
-        static void Callback(object state)
+        static void CaptureSession(ClientSession session)
         {
+            if (session == null)
+                return;
+
             try
             {
-                var browser = TabManager.ActiveBrowser;
+                var browser = session.Tabs.ActiveBrowser;
                 if (browser == null || !browser.IsBrowserInitialized)
                     return;
 
                 var now = Environment.TickCount;
-                if (frameSession.GetSharedSocketSkip(
-                        StreamingDownloadHandler.IsStreamingToClients,
-                        StreamingAudioHandler.PendingCount) != RenderFrameSkipReason.None)
+                if (session.FrameSession.GetSharedSocketSkip(
+                        StreamingDownloadHandler.IsStreamingForSession(session.WebSocketSessionId),
+                        StreamingAudioHandler.PendingCountForSession(session.WebSocketSessionId)) != RenderFrameSkipReason.None)
                     return;
 
-                VideoPlaybackBridge.Poll(browser);
+                VideoPlaybackBridge.Poll(session.Tabs.ActiveTabId, browser);
 
-                if (frameSession.GetMediaThrottleSkip(
-                        MediaBridge.IsCaptureActive,
-                        VideoPlaybackBridge.IsStreaming,
+                if (session.FrameSession.GetMediaThrottleSkip(
+                        MediaBridge.IsCaptureActiveForSession(session),
+                        VideoPlaybackBridge.IsStreamingTab(session.Tabs.ActiveTabId),
                         now) != RenderFrameSkipReason.None)
                     return;
 
-                if (!frameSession.TryBeginCapture(now))
+                if (!session.FrameSession.TryBeginCapture(now))
                     return;
 
                 try
                 {
-                    // Use paint-buffer snapshot (no DevTools). CaptureScreenshotAsync hangs on heavy SPAs
-                    // and then leaves the stream black until the server is restarted.
                     using (var bitmap = browser.ScreenshotOrNull())
                     {
-                        if (bitmap == null || server == null)
+                        if (bitmap == null)
                             return;
 
                         int hash = BitmapContentHash.Compute(bitmap);
                         long quality;
-                        if (!frameSession.TrySelectQuality(hash, MediaBridge.IsCaptureActive, now, out quality))
+                        if (!session.FrameSession.TrySelectQuality(hash, MediaBridge.IsCaptureActiveForSession(session), now, out quality))
                             return;
 
                         var jpeg = jpegEncoder.Encode(bitmap, quality);
-                        server.WebSocketServices.Broadcast(jpeg);
-                        frameSession.MarkSent(now);
+                        session.SendBinary(jpeg);
+                        session.FrameSession.MarkSent(now);
                     }
                 }
                 finally
                 {
-                    frameSession.EndCapture();
+                    session.FrameSession.EndCapture();
                 }
             }
             catch (Exception ex)
             {
-                frameSession.EndCapture();
-                Console.WriteLine("Frame capture error: " + ex.Message);
+                session.FrameSession.EndCapture();
+                Console.WriteLine("Frame capture error session={0}: {1}", session.WebSocketSessionId, ex.Message);
             }
         }
 
-        static int frameNum = 0;
-        private static void CefPaint(object sender, OnPaintEventArgs e)
+        private static async System.Threading.Tasks.Task HandleNavigateBackAsync(ClientSession session, ChromiumWebBrowser browser, bool stopBeforeBlank)
         {
-            frameNum++;
-            var browserImage = new Bitmap(e.Width, e.Height, 4 * e.Width, System.Drawing.Imaging.PixelFormat.Format32bppRgb, e.BufferHandle);
-            server.WebSocketServices.Broadcast(jpegEncoder.Encode(browserImage, 75L));
-        }
-
-        private static async System.Threading.Tasks.Task HandleNavigateBackAsync(ChromiumWebBrowser browser, bool stopBeforeBlank)
-        {
-            if (browser == null)
+            if (browser == null || session == null)
                 return;
 
             try
@@ -463,7 +469,7 @@ namespace BrowserServer
                 if (!browser.CanGoBack)
                 {
                     if (stopBeforeBlank)
-                        BroadcastAtHistoryRoot();
+                        SendAtHistoryRoot(session);
                     return;
                 }
 
@@ -472,14 +478,14 @@ namespace BrowserServer
                     var host = browser.GetBrowser()?.GetHost();
                     if (host == null)
                     {
-                        BroadcastAtHistoryRoot();
+                        SendAtHistoryRoot(session);
                         return;
                     }
 
                     var entries = await host.GetNavigationEntriesAsync(false);
                     if (entries == null || entries.Count == 0)
                     {
-                        BroadcastAtHistoryRoot();
+                        SendAtHistoryRoot(session);
                         return;
                     }
 
@@ -495,14 +501,14 @@ namespace BrowserServer
 
                     if (currentIndex <= 0)
                     {
-                        BroadcastAtHistoryRoot();
+                        SendAtHistoryRoot(session);
                         return;
                     }
 
                     var previous = entries[currentIndex - 1];
                     if (IsBlankNavigationUrl(previous?.Url) || IsBlankNavigationUrl(previous?.DisplayUrl))
                     {
-                        BroadcastAtHistoryRoot();
+                        SendAtHistoryRoot(session);
                         return;
                     }
                 }
@@ -514,7 +520,7 @@ namespace BrowserServer
             {
                 Console.WriteLine("NavigateBack error: " + ex.Message);
                 if (stopBeforeBlank)
-                    BroadcastAtHistoryRoot();
+                    SendAtHistoryRoot(session);
             }
         }
 
@@ -528,23 +534,17 @@ namespace BrowserServer
                 || url.Equals("about:blank#blocked", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static void BroadcastAtHistoryRoot()
+        private static void SendAtHistoryRoot(ClientSession session)
         {
             try
             {
-                server?.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-                {
-                    PType = TextPacketType.AtHistoryRoot,
-                    text = ""
-                }));
+                session?.SendText(TextPacketType.AtHistoryRoot, "");
             }
             catch
             {
             }
         }
 
-        //TODO: accelerated Draw
-        // Forward the renderbuffer from here instead of screenshot?
         public class TestRHI : DefaultRenderHandler
         {
             private ChromiumWebBrowser browser;
@@ -559,33 +559,30 @@ namespace BrowserServer
             public override void OnPaint(PaintElementType type, Rect dirtyRect, IntPtr buffer, int width, int height)
             {
                 base.OnPaint(type, dirtyRect, buffer, width, height);
-                if (TabManager.ActiveTabId == tabId)
-                    VideoPlaybackBridge.HandlePaint(type, buffer, width, height);
+
+                var session = ClientSessionHub.GetByTabId(tabId);
+                if (session == null || session.Tabs.ActiveTabId != tabId)
+                    return;
+
+                VideoPlaybackBridge.HandlePaint(tabId, type, buffer, width, height);
             }
 
             public override void OnVirtualKeyboardRequested(IBrowser browser, TextInputMode inputMode)
             {
                 base.OnVirtualKeyboardRequested(browser, inputMode);
 
-                if (TabManager.ActiveTabId != tabId)
+                var session = ClientSessionHub.GetByTabId(tabId);
+                if (session == null || session.Tabs.ActiveTabId != tabId)
                     return;
 
                 Console.WriteLine("Virtual Keyboard Requested for " + inputMode);
                 if (inputMode == TextInputMode.None)
                 {
-                    server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-                    {
-                        PType = TextPacketType.TextInputCancel
-                    }));
+                    session.SendText(TextPacketType.TextInputCancel);
                 }
                 else
                 {
-                    // Signal client to show the OS keyboard and forward keys into this focused field.
-                    server.WebSocketServices.Broadcast(JsonConvert.SerializeObject(new TextPacket
-                    {
-                        PType = TextPacketType.TextInputContent,
-                        text = ""
-                    }));
+                    session.SendText(TextPacketType.TextInputContent, "");
                 }
             }
         }

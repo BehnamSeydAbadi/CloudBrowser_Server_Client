@@ -10,7 +10,7 @@ using System.Threading;
 namespace BrowserServer
 {
     /// <summary>
-    /// Captures CEF PCM audio and queues it for WebSocket broadcast on a safe sender thread.
+    /// Captures CEF PCM audio and queues it for WebSocket unicast on a safe sender thread.
     /// Binary packet layout:
     ///   magic[4]="AUDI" | sampleRate:int32 | channels:int32 | frames:int32 | pcmS16le interleaved
     /// </summary>
@@ -18,7 +18,13 @@ namespace BrowserServer
     {
         public static readonly byte[] Magic = { (byte)'A', (byte)'U', (byte)'D', (byte)'I' };
 
-        private static readonly ConcurrentQueue<byte[]> Outbound = new ConcurrentQueue<byte[]>();
+        private sealed class OutboundPacket
+        {
+            public string SessionId;
+            public byte[] Data;
+        }
+
+        private static readonly ConcurrentQueue<OutboundPacket> Outbound = new ConcurrentQueue<OutboundPacket>();
         private static int outboundCount;
         private static int loggedPackets;
         private const int MaxOutboundPackets = 24; // ~240ms at 10ms CEF quanta
@@ -38,41 +44,57 @@ namespace BrowserServer
             get { return Volatile.Read(ref outboundCount); }
         }
 
+        public static int PendingCountForSession(string sessionId)
+        {
+            if (string.IsNullOrEmpty(sessionId))
+                return 0;
+
+            var count = 0;
+            foreach (var packet in Outbound)
+            {
+                if (packet != null && packet.SessionId == sessionId)
+                    count++;
+            }
+            return count;
+        }
+
         /// <summary>Drain queued AUDI packets onto the WebSocket (call from timer / UI thread).</summary>
         public static void FlushOutbound()
         {
-            var server = TabManager.Server;
-            if (server == null)
-                return;
-
-            byte[] packet;
+            OutboundPacket packet;
             int sent = 0;
             while (sent < 16 && Outbound.TryDequeue(out packet))
             {
                 Interlocked.Decrement(ref outboundCount);
+                if (packet == null || string.IsNullOrEmpty(packet.SessionId) || packet.Data == null)
+                    continue;
+
                 try
                 {
-                    server.WebSocketServices.Broadcast(packet);
+                    if (!SessionMessaging.SendBinary(packet.SessionId, packet.Data))
+                        break;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("Audio broadcast error: " + ex.Message);
+                    Console.WriteLine("Audio send error: " + ex.Message);
                     break;
                 }
                 sent++;
             }
         }
 
-        public static void EnqueueStop()
+        public static void EnqueueStop(string sessionId)
         {
+            if (string.IsNullOrEmpty(sessionId))
+                return;
+
             try
             {
-                var json = Newtonsoft.Json.JsonConvert.SerializeObject(new TextPacket
+                SessionMessaging.SendText(sessionId, new TextPacket
                 {
                     PType = TextPacketType.AudioStop,
                     text = ""
                 });
-                TabManager.Server?.WebSocketServices.Broadcast(json);
             }
             catch
             {
@@ -81,7 +103,6 @@ namespace BrowserServer
 
         protected override bool GetAudioParameters(IWebBrowser chromiumWebBrowser, IBrowser browser, ref AudioParameters parameters)
         {
-            // Prefer stereo 48k — widely supported by phone AudioGraph devices.
             parameters = new AudioParameters(ChannelLayout.LayoutStereo, 48000, 480);
             return true;
         }
@@ -99,7 +120,8 @@ namespace BrowserServer
             if (noOfFrames <= 0 || data == IntPtr.Zero)
                 return;
 
-            if (TabManager.ActiveTabId != tabId)
+            var owner = ClientSessionHub.GetByTabId(tabId);
+            if (owner == null || owner.Tabs.ActiveTabId != tabId)
                 return;
 
             try
@@ -117,17 +139,20 @@ namespace BrowserServer
                 WriteInt32(packet, 12, noOfFrames);
                 Buffer.BlockCopy(pcm, 0, packet, 16, pcm.Length);
 
-                // Bound memory if the client is slow — keep ~250ms, never seconds of backlog.
                 while (Volatile.Read(ref outboundCount) > MaxOutboundPackets)
                 {
-                    byte[] dropped;
+                    OutboundPacket dropped;
                     if (Outbound.TryDequeue(out dropped))
                         Interlocked.Decrement(ref outboundCount);
                     else
                         break;
                 }
 
-                Outbound.Enqueue(packet);
+                Outbound.Enqueue(new OutboundPacket
+                {
+                    SessionId = owner.WebSocketSessionId,
+                    Data = packet
+                });
                 Interlocked.Increment(ref outboundCount);
 
                 if (Interlocked.Increment(ref loggedPackets) <= 3)
@@ -142,8 +167,9 @@ namespace BrowserServer
         protected override void OnAudioStreamStopped(IWebBrowser chromiumWebBrowser, IBrowser browser)
         {
             Console.WriteLine("Audio stop tab={0}", tabId);
-            if (TabManager.ActiveTabId == tabId)
-                EnqueueStop();
+            var owner = ClientSessionHub.GetByTabId(tabId);
+            if (owner != null && owner.Tabs.ActiveTabId == tabId)
+                EnqueueStop(owner.WebSocketSessionId);
         }
 
         protected override void OnAudioStreamError(IWebBrowser chromiumWebBrowser, IBrowser browser, string errorMessage)
@@ -153,8 +179,6 @@ namespace BrowserServer
 
         private static byte[] InterleaveFloatPlanarToS16(IntPtr data, int channelCount, int frames, out int outChannels)
         {
-            // data is float** — one contiguous buffer pointer per channel (CefSharp / CEF).
-            // Downmix to stereo max for mobile playback compatibility.
             outChannels = channelCount >= 2 ? 2 : 1;
             var pcm = new byte[frames * outChannels * 2];
             int outIndex = 0;
