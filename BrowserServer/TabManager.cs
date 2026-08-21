@@ -37,6 +37,8 @@ namespace BrowserServer
         public static Size BrowserSize { get; private set; } = new Size(360, 640);
         public static WebSocketServer Server { get; set; }
         public static Func<ChromiumWebBrowser, string, DefaultRenderHandler> CreateRenderHandler { get; set; }
+        /// <summary>Invoked when the active tab changes (new tab, switch, close).</summary>
+        public static Action ActiveTabChanged;
 
         public static TabSession Active
         {
@@ -83,9 +85,10 @@ namespace BrowserServer
         private static TabSession CreateTabUnlocked(string url, bool setActive)
         {
             var id = Guid.NewGuid().ToString("N");
+            var loadUrl = string.IsNullOrWhiteSpace(url) ? DefaultUrl : url.Trim();
             // Create browser manually so JS media bridge can register before CEF spins up.
             var browser = new ChromiumWebBrowser(
-                address: "",
+                address: loadUrl,
                 browserSettings: null,
                 requestContext: null,
                 automaticallyCreateBrowser: false);
@@ -101,14 +104,13 @@ namespace BrowserServer
             if (CreateRenderHandler != null)
                 browser.RenderHandler = CreateRenderHandler(browser, id);
             browser.CreateBrowser();
-            browser.Load(url ?? DefaultUrl);
 
             var session = new TabSession
             {
                 Id = id,
                 Browser = browser,
                 Title = "New Tab",
-                Url = url
+                Url = loadUrl
             };
 
             browser.LoadingStateChanged += (s, e) => OnLoadingStateChanged(session, e);
@@ -149,10 +151,85 @@ namespace BrowserServer
             Tabs[id] = session;
             TabOrder.Add(id);
             if (setActive)
+            {
                 ActiveTabId = id;
+                NotifyActiveTabChanged();
+                RequestRepaint(session);
+            }
 
+            ScheduleNavigate(session, loadUrl);
             BroadcastTabList();
             return session;
+        }
+
+        /// <summary>Load a URL once CEF is ready (Load before init is silently ignored).</summary>
+        public static void ScheduleNavigate(TabSession session, string url)
+        {
+            if (session?.Browser == null || string.IsNullOrWhiteSpace(url))
+                return;
+
+            var target = url.Trim();
+            var browser = session.Browser;
+
+            Action navigate = () =>
+            {
+                try
+                {
+                    session.Url = target;
+                    if (browser.IsBrowserInitialized)
+                        browser.LoadUrl(target);
+                    else
+                        browser.Load(target);
+                    RequestRepaint(session);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("ScheduleNavigate error: " + ex.Message);
+                }
+            };
+
+            if (browser.IsBrowserInitialized)
+            {
+                navigate();
+                return;
+            }
+
+            var attempts = 0;
+            Timer timer = null;
+            timer = new Timer(_ =>
+            {
+                if (browser.IsBrowserInitialized || ++attempts >= 60)
+                {
+                    timer.Dispose();
+                    navigate();
+                }
+            }, null, 50, 50);
+        }
+
+        static void NotifyActiveTabChanged()
+        {
+            try
+            {
+                ActiveTabChanged?.Invoke();
+            }
+            catch
+            {
+            }
+        }
+
+        static void RequestRepaint(TabSession session)
+        {
+            try
+            {
+                var browser = session?.Browser;
+                if (browser == null)
+                    return;
+                browser.GetBrowserHost()?.Invalidate(PaintElementType.View);
+                browser.GetBrowserHost()?.WasResized();
+            }
+            catch
+            {
+            }
         }
 
         public static bool SwitchTab(string tabId)
@@ -166,6 +243,8 @@ namespace BrowserServer
                 var session = Tabs[tabId];
                 session.Browser.DeviceScaleFactor = DeviceScaleFactor;
                 session.Browser.Size = BrowserSize;
+                NotifyActiveTabChanged();
+                RequestRepaint(session);
                 BroadcastTabList();
                 BroadcastNavigatedUrl(session.Url);
                 return true;
@@ -215,12 +294,17 @@ namespace BrowserServer
                 return;
 
             var browser = ActiveBrowser;
-            if (browser == null || !browser.IsBrowserInitialized)
+            if (browser == null)
                 return;
 
             try
             {
-                browser.LoadUrl(url.Trim());
+                var target = url.Trim();
+                // Load() works before IsBrowserInitialized; LoadUrl does not.
+                if (browser.IsBrowserInitialized)
+                    browser.LoadUrl(target);
+                else
+                    browser.Load(target);
             }
             catch (Exception ex)
             {

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using CefSharp;
 using CefSharp.Handler;
 using Newtonsoft.Json;
@@ -87,6 +89,210 @@ namespace BrowserServer
                     current.LastAckTick = Environment.TickCount;
                 }
             }
+        }
+
+        /// <summary>Download a URL on the server and stream bytes to the phone as FILE chunks.</summary>
+        public static void StreamUrlToClient(string url, string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+
+            var ignored = StreamUrlToClientAsync(url, fileName);
+        }
+
+        static async Task StreamUrlToClientAsync(string url, string fileName)
+        {
+            Directory.CreateDirectory(TempRoot);
+
+            try
+            {
+                using (var http = new HttpClient())
+                using (var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
+                {
+                    response.EnsureSuccessStatusCode();
+                    var contentType = response.Content.Headers.ContentType?.MediaType;
+                    fileName = EnsureImageFileName(SanitizeFileName(fileName), url, contentType);
+
+                    var id = Guid.NewGuid().ToString("N");
+                    var tempPath = Path.Combine(TempRoot, id + "_" + fileName);
+
+                    using (var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                    using (var file = File.Create(tempPath))
+                    {
+                        await stream.CopyToAsync(file).ConfigureAwait(false);
+                    }
+
+                    var length = new FileInfo(tempPath).Length;
+                    fileName = EnsureImageFileNameFromBytes(tempPath, fileName);
+                    var finalPath = Path.Combine(TempRoot, id + "_" + fileName);
+                    if (!string.Equals(tempPath, finalPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (File.Exists(finalPath))
+                            File.Delete(finalPath);
+                        File.Move(tempPath, finalPath);
+                        tempPath = finalPath;
+                    }
+
+                    var mime = GuessMimeType(fileName);
+                    Console.WriteLine("Image save queued id={0} bytes={1} file={2} url={3}", id, length, fileName, url);
+
+                    BroadcastText(TextPacketType.DownloadStarted, new DownloadEventPayload
+                    {
+                        id = id,
+                        fileName = fileName,
+                        totalBytes = length,
+                        receivedBytes = length,
+                        percent = 0,
+                        mimeType = mime,
+                        success = true
+                    });
+
+                    BroadcastText(TextPacketType.DownloadProgress, new DownloadEventPayload
+                    {
+                        id = id,
+                        fileName = fileName,
+                        totalBytes = length,
+                        receivedBytes = length,
+                        percent = 95,
+                        mimeType = mime,
+                        success = true
+                    });
+
+                    var large = length >= LargeFileThresholdBytes;
+                    Pending.Enqueue(new PendingStream
+                    {
+                        Id = id,
+                        Path = tempPath,
+                        FileName = fileName,
+                        MimeType = mime,
+                        TotalBytes = length,
+                        ChunkSize = large ? LargeChunkSize : DefaultChunkSize,
+                        AckWindow = large ? LargeAckWindow : DefaultAckWindow,
+                        AckTimeoutMs = large ? LargeAckTimeoutMs : DefaultAckTimeoutMs
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("StreamUrlToClient error: " + ex.Message);
+            }
+        }
+
+        static string EnsureImageFileName(string fileName, string url, string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                fileName = "image";
+
+            fileName = Path.GetFileName(fileName.Trim());
+            var ext = Path.GetExtension(fileName);
+            if (!string.IsNullOrEmpty(ext))
+                return fileName;
+
+            ext = ExtensionFromContentType(contentType) ?? ExtensionFromUrl(url) ?? ".jpg";
+            var baseName = Path.GetFileNameWithoutExtension(fileName);
+            if (string.IsNullOrWhiteSpace(baseName))
+                baseName = "image";
+            return baseName + ext;
+        }
+
+        static string EnsureImageFileNameFromBytes(string path, string fileName)
+        {
+            var ext = Path.GetExtension(fileName);
+            if (!string.IsNullOrEmpty(ext) && ext.Length > 1)
+                return fileName;
+
+            var sniffed = SniffImageExtension(path);
+            if (string.IsNullOrEmpty(sniffed))
+                sniffed = ".jpg";
+
+            var baseName = Path.GetFileNameWithoutExtension(fileName);
+            if (string.IsNullOrWhiteSpace(baseName))
+                baseName = "image";
+            return baseName + sniffed;
+        }
+
+        static string SniffImageExtension(string path)
+        {
+            try
+            {
+                var header = new byte[12];
+                int read;
+                using (var fs = File.OpenRead(path))
+                {
+                    read = fs.Read(header, 0, header.Length);
+                }
+
+                if (read >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF)
+                    return ".jpg";
+                if (read >= 8 &&
+                    header[0] == 0x89 && header[1] == (byte)'P' && header[2] == (byte)'N' && header[3] == (byte)'G' &&
+                    header[4] == 0x0D && header[5] == 0x0A && header[6] == 0x1A && header[7] == 0x0A)
+                    return ".png";
+                if (read >= 6 &&
+                    header[0] == (byte)'G' && header[1] == (byte)'I' && header[2] == (byte)'F' &&
+                    header[3] == (byte)'8' && (header[4] == (byte)'7' || header[4] == (byte)'9') && header[5] == (byte)'a')
+                    return ".gif";
+                if (read >= 12 &&
+                    header[0] == (byte)'R' && header[1] == (byte)'I' && header[2] == (byte)'F' && header[3] == (byte)'F' &&
+                    header[8] == (byte)'W' && header[9] == (byte)'E' && header[10] == (byte)'B' && header[11] == (byte)'P')
+                    return ".webp";
+            }
+            catch
+            {
+            }
+            return null;
+        }
+
+        static string ExtensionFromContentType(string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(contentType))
+                return null;
+
+            switch (contentType.Split(';')[0].Trim().ToLowerInvariant())
+            {
+                case "image/jpeg":
+                case "image/jpg":
+                    return ".jpg";
+                case "image/png":
+                    return ".png";
+                case "image/gif":
+                    return ".gif";
+                case "image/webp":
+                    return ".webp";
+                case "image/bmp":
+                    return ".bmp";
+                case "image/svg+xml":
+                    return ".svg";
+                default:
+                    return null;
+            }
+        }
+
+        static string ExtensionFromUrl(string url)
+        {
+            try
+            {
+                var ext = Path.GetExtension(new Uri(url).LocalPath);
+                if (string.IsNullOrEmpty(ext) || ext.Length > 5)
+                    return null;
+                return ext.ToLowerInvariant();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        static string GuessMimeType(string fileName)
+        {
+            var ext = Path.GetExtension(fileName);
+            if (string.IsNullOrEmpty(ext))
+                return "image/jpeg";
+            ext = ext.ToLowerInvariant();
+            if (ext == ".png") return "image/png";
+            if (ext == ".gif") return "image/gif";
+            if (ext == ".webp") return "image/webp";
+            return "image/jpeg";
         }
 
         public static void FlushOutbound()

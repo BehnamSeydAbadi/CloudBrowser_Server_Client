@@ -46,7 +46,9 @@ namespace BrowserClient
         /// <summary>Site Notification API — JSON NotificationPayload.</summary>
         Notification,
         /// <summary>Site wants notification permission — JSON NotificationPermissionPayload.</summary>
-        NotificationPermissionRequest
+        NotificationPermissionRequest,
+        /// <summary>Context menu offer after long-press — JSON ContextMenuOfferPayload.</summary>
+        ContextMenu
     }
 
     public enum PacketType
@@ -74,7 +76,24 @@ namespace BrowserClient
         /// <summary>Origins pinned via Add to Home — treat as installed PWAs.</summary>
         PwaInstalled,
         /// <summary>Phone display/locale environment sent on connect.</summary>
-        ClientEnvironment
+        ClientEnvironment,
+        /// <summary>Long-press hit-test at normalized coords — JSON PointerPacket.</summary>
+        ContextMenuQuery,
+        /// <summary>Open tab or save image — JSON ContextMenuActionPayload.</summary>
+        ContextMenuAction
+    }
+
+    public class ContextMenuOfferPayload
+    {
+        public string linkUrl;
+        public string imageUrl;
+        public string text;
+    }
+
+    public class ContextMenuActionPayload
+    {
+        public string action;
+        public string url;
     }
 
     public class ClientEnvironmentPayload
@@ -160,6 +179,7 @@ namespace BrowserClient
         public string id;
         public string fileName;
         public long size;
+        public string mimeType;
         public string status; // downloading | transferring | completed | failed
         public int percent;
         public string accessToken;

@@ -142,6 +142,7 @@ namespace BrowserClient
                 {
                     id = payload.id,
                     fileName = string.IsNullOrWhiteSpace(payload.fileName) ? "download" : payload.fileName,
+                    mimeType = payload.mimeType,
                     size = payload.totalBytes,
                     status = "downloading",
                     percent = Math.Max(0, payload.percent),
@@ -167,6 +168,8 @@ namespace BrowserClient
 
                 if (!string.IsNullOrWhiteSpace(payload.fileName))
                     info.fileName = payload.fileName;
+                if (!string.IsNullOrWhiteSpace(payload.mimeType))
+                    info.mimeType = payload.mimeType;
                 info.size = payload.totalBytes > 0 ? payload.totalBytes : info.size;
                 info.percent = Math.Max(0, Math.Min(100, payload.percent));
                 if (info.status != "completed" && info.status != "failed")
@@ -223,20 +226,24 @@ namespace BrowserClient
             if (!TryParseFilePacket(buffer, count, out id, out seq, out isLast, out dataOffset, out dataLen))
                 return;
 
+            if (!incoming.ContainsKey(id))
+                await WaitForDownloadMetadataAsync(id);
+
             IncomingTransfer transfer;
             lock (sync)
             {
                 if (!incoming.TryGetValue(id, out transfer))
                 {
                     DownloadInfo info;
-                    var fileName = items.TryGetValue(id, out info) && !string.IsNullOrWhiteSpace(info.fileName)
+                    items.TryGetValue(id, out info);
+                    var fileName = info != null && !string.IsNullOrWhiteSpace(info.fileName)
                         ? info.fileName
                         : ("download_" + id);
 
                     transfer = new IncomingTransfer
                     {
                         Id = id,
-                        FileName = SanitizeFileName(fileName),
+                        FileName = EnsureDownloadFileName(fileName, info?.mimeType),
                         ExpectedSeq = 0
                     };
                     incoming[id] = transfer;
@@ -523,6 +530,7 @@ namespace BrowserClient
             {
                 id = src.id,
                 fileName = src.fileName,
+                mimeType = src.mimeType,
                 size = src.size,
                 status = src.status,
                 percent = src.percent,
@@ -537,6 +545,7 @@ namespace BrowserClient
             if (string.IsNullOrWhiteSpace(name))
                 return "download";
 
+            name = Path.GetFileName(name.Trim());
             foreach (var c in Path.GetInvalidFileNameChars())
                 name = name.Replace(c, '_');
             name = name.Trim();
@@ -545,6 +554,59 @@ namespace BrowserClient
             if (name.Length > 120)
                 name = name.Substring(0, 120);
             return name;
+        }
+
+        private async Task WaitForDownloadMetadataAsync(string id)
+        {
+            var deadline = Environment.TickCount + 2000;
+            while (Environment.TickCount < deadline)
+            {
+                lock (sync)
+                {
+                    if (items.ContainsKey(id))
+                        return;
+                }
+                await Task.Delay(25);
+            }
+        }
+
+        private static string EnsureDownloadFileName(string fileName, string mimeType)
+        {
+            fileName = SanitizeFileName(fileName);
+            var ext = Path.GetExtension(fileName);
+            if (!string.IsNullOrEmpty(ext) && ext.Length > 1)
+                return fileName;
+
+            ext = ExtensionFromMimeType(mimeType) ?? ".jpg";
+            var baseName = Path.GetFileNameWithoutExtension(fileName);
+            if (string.IsNullOrWhiteSpace(baseName) || baseName.StartsWith("download", StringComparison.OrdinalIgnoreCase))
+                baseName = "image";
+            return baseName + ext;
+        }
+
+        private static string ExtensionFromMimeType(string mimeType)
+        {
+            if (string.IsNullOrWhiteSpace(mimeType))
+                return null;
+
+            switch (mimeType.Split(';')[0].Trim().ToLowerInvariant())
+            {
+                case "image/jpeg":
+                case "image/jpg":
+                    return ".jpg";
+                case "image/png":
+                    return ".png";
+                case "image/gif":
+                    return ".gif";
+                case "image/webp":
+                    return ".webp";
+                case "image/bmp":
+                    return ".bmp";
+                case "image/svg+xml":
+                    return ".svg";
+                default:
+                    return null;
+            }
         }
 
         private static bool TryParseFilePacket(

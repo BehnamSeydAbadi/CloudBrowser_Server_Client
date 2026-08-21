@@ -19,7 +19,9 @@ using Windows.UI.Core;
 using Windows.UI.StartScreen;
 using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Controls.Primitives;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Navigation;
 using Newtonsoft.Json;
@@ -48,6 +50,20 @@ namespace BrowserClient
         private readonly HashSet<string> downloadCompleteToasts = new HashSet<string>();
         private int downloadToastGeneration;
         private bool suppressUrlSuggest;
+        private bool awaitingContextMenu;
+        private Point pendingContextMenuPoint;
+        private LongPressState longPress;
+        private const int LongPressMs = 500;
+        private const double LongPressMoveThreshold = 0.02;
+
+        sealed class LongPressState
+        {
+            public uint PointerId;
+            public Point NormStart;
+            public bool TouchDownSent;
+            public bool MenuOpened;
+            public DispatcherTimer Timer;
+        }
         private int urlSuggestHideGeneration;
         private string pinPageUrl;
         private string pinTileId;
@@ -598,6 +614,9 @@ namespace BrowserClient
 
         private void EndPointerContact(Windows.UI.Xaml.Input.PointerRoutedEventArgs e, bool releaseCapture)
         {
+            if (TryFinishLongPress(e, releaseCapture))
+                return;
+
             if (ds == null || !activePointers.Remove(e.Pointer.PointerId))
                 return;
 
@@ -607,14 +626,75 @@ namespace BrowserClient
             e.Handled = true;
         }
 
+        private bool TryFinishLongPress(Windows.UI.Xaml.Input.PointerRoutedEventArgs e, bool releaseCapture)
+        {
+            if (longPress == null || longPress.PointerId != e.Pointer.PointerId)
+                return false;
+
+            if (longPress.Timer != null)
+                longPress.Timer.Stop();
+
+            if (longPress.MenuOpened)
+            {
+                if (longPress.TouchDownSent)
+                    ds?.TouchUp(GetNormalizedPointerPosition(e), e.Pointer.PointerId);
+            }
+            else if (longPress.TouchDownSent)
+            {
+                ds?.TouchUp(GetNormalizedPointerPosition(e), e.Pointer.PointerId);
+            }
+            else if (ds != null)
+            {
+                ds.TouchDown(longPress.NormStart, e.Pointer.PointerId);
+                ds.TouchUp(GetNormalizedPointerPosition(e), e.Pointer.PointerId);
+            }
+
+            activePointers.Remove(e.Pointer.PointerId);
+            if (releaseCapture)
+                test.ReleasePointerCapture(e.Pointer);
+            longPress = null;
+            e.Handled = true;
+            return true;
+        }
+
+        private void CancelLongPress()
+        {
+            if (longPress?.Timer != null)
+                longPress.Timer.Stop();
+            longPress = null;
+        }
+
+        private void LongPressTimer_Tick(object sender, object e)
+        {
+            if (longPress == null || ds == null)
+                return;
+
+            longPress.Timer.Stop();
+            longPress.MenuOpened = true;
+            pendingContextMenuPoint = new Point(
+                longPress.NormStart.X * test.ActualWidth,
+                longPress.NormStart.Y * test.ActualHeight);
+            awaitingContextMenu = true;
+            var ignored = ds.SendContextMenuQueryAsync(longPress.NormStart);
+        }
+
         private void Test_PointerPressed(object sender, Windows.UI.Xaml.Input.PointerRoutedEventArgs e)
         {
             if (ds == null)
                 return;
 
-            activePointers.Add(e.Pointer.PointerId);
+            CancelLongPress();
+            longPress = new LongPressState
+            {
+                PointerId = e.Pointer.PointerId,
+                NormStart = GetNormalizedPointerPosition(e),
+                TouchDownSent = false,
+                MenuOpened = false,
+                Timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(LongPressMs) }
+            };
+            longPress.Timer.Tick += LongPressTimer_Tick;
             test.CapturePointer(e.Pointer);
-            ds.TouchDown(GetNormalizedPointerPosition(e), e.Pointer.PointerId);
+            longPress.Timer.Start();
             e.Handled = true;
         }
 
@@ -625,6 +705,24 @@ namespace BrowserClient
 
         private void Test_PointerMoved(object sender, Windows.UI.Xaml.Input.PointerRoutedEventArgs e)
         {
+            if (longPress != null && e.Pointer.PointerId == longPress.PointerId && !longPress.MenuOpened)
+            {
+                var norm = GetNormalizedPointerPosition(e);
+                if (!longPress.TouchDownSent && PointerMovedEnough(longPress.NormStart, norm))
+                {
+                    longPress.Timer?.Stop();
+                    longPress.TouchDownSent = true;
+                    activePointers.Add(e.Pointer.PointerId);
+                    ds.TouchDown(longPress.NormStart, e.Pointer.PointerId);
+                }
+
+                if (longPress.TouchDownSent)
+                    ds.TouchMove(norm, e.Pointer.PointerId);
+
+                e.Handled = true;
+                return;
+            }
+
             if (ds == null || !activePointers.Contains(e.Pointer.PointerId))
                 return;
 
@@ -634,6 +732,100 @@ namespace BrowserClient
 
             ds.TouchMove(GetNormalizedPointerPosition(e), e.Pointer.PointerId);
             e.Handled = true;
+        }
+
+        private static bool PointerMovedEnough(Point start, Point current)
+        {
+            return Math.Abs(current.X - start.X) > LongPressMoveThreshold
+                || Math.Abs(current.Y - start.Y) > LongPressMoveThreshold;
+        }
+
+        private void ShowContextMenu(ContextMenuOfferPayload offer, Point positionInTest)
+        {
+            if (offer == null || ds == null)
+                return;
+
+            var flyout = new MenuFlyout();
+            var linkOrImage = !string.IsNullOrWhiteSpace(offer.linkUrl) || !string.IsNullOrWhiteSpace(offer.imageUrl);
+            var shareUrl = !string.IsNullOrWhiteSpace(offer.linkUrl) ? offer.linkUrl.Trim()
+                : (!string.IsNullOrWhiteSpace(offer.imageUrl) ? offer.imageUrl.Trim() : null);
+
+            if (linkOrImage && !string.IsNullOrEmpty(shareUrl))
+            {
+                var openUrl = !string.IsNullOrWhiteSpace(offer.linkUrl)
+                    ? offer.linkUrl.Trim()
+                    : offer.imageUrl.Trim();
+                flyout.Items.Add(CreateMenuItem("Open in new tab", () =>
+                {
+                    var ignored = ds.SendContextMenuActionAsync("openNewTab", openUrl);
+                }));
+                flyout.Items.Add(CreateMenuItem("Copy link address", () => CopyTextToClipboard(openUrl)));
+                flyout.Items.Add(CreateMenuItem("Share", () => ShareUri(openUrl)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(offer.text))
+            {
+                var text = offer.text;
+                flyout.Items.Add(CreateMenuItem("Copy text", () => CopyTextToClipboard(text)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(offer.imageUrl))
+            {
+                var imageUrl = offer.imageUrl.Trim();
+                flyout.Items.Add(CreateMenuItem("Save picture", () =>
+                {
+                    var ignored = ds.SendContextMenuActionAsync("saveImage", imageUrl);
+                }));
+            }
+
+            if (flyout.Items.Count == 0)
+                return;
+
+            flyout.ShowAt(test, positionInTest);
+        }
+
+        private static MenuFlyoutItem CreateMenuItem(string label, Action action)
+        {
+            var item = new MenuFlyoutItem { Text = label };
+            item.Click += (s, e) => action();
+            return item;
+        }
+
+        private static void CopyTextToClipboard(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return;
+            try
+            {
+                var package = new DataPackage();
+                package.SetText(text);
+                Clipboard.SetContent(package);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void ShareUri(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+            try
+            {
+                var dtm = DataTransferManager.GetForCurrentView();
+                TypedEventHandler<DataTransferManager, DataRequestedEventArgs> handler = null;
+                handler = (sender, args) =>
+                {
+                    args.Request.Data.Properties.Title = "Share";
+                    args.Request.Data.SetUri(new Uri(url));
+                    dtm.DataRequested -= handler;
+                };
+                dtm.DataRequested += handler;
+                DataTransferManager.ShowShareUI();
+            }
+            catch
+            {
+            }
         }
 
         private void Test_PointerCanceled(object sender, Windows.UI.Xaml.Input.PointerRoutedEventArgs e)
@@ -759,6 +951,20 @@ namespace BrowserClient
 
                         case TextPacketType.Notification:
                             HandleServerNotification(o.text);
+                            break;
+
+                        case TextPacketType.ContextMenu:
+                            if (!awaitingContextMenu)
+                                break;
+                            awaitingContextMenu = false;
+                            try
+                            {
+                                var offer = JsonConvert.DeserializeObject<ContextMenuOfferPayload>(o.text);
+                                ShowContextMenu(offer, pendingContextMenuPoint);
+                            }
+                            catch
+                            {
+                            }
                             break;
                     }
                 });

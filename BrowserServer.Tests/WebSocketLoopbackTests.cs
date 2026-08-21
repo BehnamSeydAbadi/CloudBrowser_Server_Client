@@ -68,6 +68,8 @@ namespace BrowserServer.Tests
             public void NavigateForward() { }
             public void SizeChange(int width, int height, float scale) { }
             public void ClientEnvironment(ClientEnvironmentPayload payload) { }
+            public void ContextMenuQuery(PointerPacket pointer) { }
+            public void ContextMenuAction(ContextMenuActionPayload action) { }
             public void Touch(TouchKind kind, PointerPacket pointer) { }
             public void ClientBinary(byte[] data)
             {

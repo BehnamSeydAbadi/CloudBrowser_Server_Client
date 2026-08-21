@@ -24,6 +24,8 @@ namespace BrowserServer
         void NavigateForward();
         void SizeChange(int width, int height, float scale);
         void ClientEnvironment(ClientEnvironmentPayload payload);
+        void ContextMenuQuery(PointerPacket pointer);
+        void ContextMenuAction(ContextMenuActionPayload action);
         void Touch(TouchKind kind, PointerPacket pointer);
         void ClientBinary(byte[] data);
     }
@@ -164,6 +166,30 @@ namespace BrowserServer
                     {
                         var env = WebSocketJsonProtocol.DeserializeNested<ClientEnvironmentPayload>(packet.JSONData);
                         commands.ClientEnvironment(env);
+                    }
+                    catch
+                    {
+                        return DispatchResult.IgnoredMalformed;
+                    }
+                    return DispatchResult.Handled;
+
+                case PacketType.ContextMenuQuery:
+                    try
+                    {
+                        var pt = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData ?? "{}");
+                        commands.ContextMenuQuery(pt);
+                    }
+                    catch
+                    {
+                        return DispatchResult.IgnoredMalformed;
+                    }
+                    return DispatchResult.Handled;
+
+                case PacketType.ContextMenuAction:
+                    try
+                    {
+                        var action = WebSocketJsonProtocol.DeserializeNested<ContextMenuActionPayload>(packet.JSONData);
+                        commands.ContextMenuAction(action);
                     }
                     catch
                     {

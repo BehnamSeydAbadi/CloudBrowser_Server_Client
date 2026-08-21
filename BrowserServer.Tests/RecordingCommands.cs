@@ -18,8 +18,9 @@ namespace BrowserServer.Tests
         public int LastHeight;
         public float LastScale;
         public ClientEnvironmentPayload LastEnvironment;
-        public TouchKind? LastTouchKind;
         public PointerPacket LastPointer;
+        public ContextMenuActionPayload LastContextAction;
+        public TouchKind? LastTouchKind;
         public byte[] LastBinary;
 
         public void CreateTab()
@@ -115,6 +116,18 @@ namespace BrowserServer.Tests
                 LastScale = (float)payload.devicePixelRatio;
             }
             Log.Add("ClientEnvironment");
+        }
+
+        public void ContextMenuQuery(PointerPacket pointer)
+        {
+            LastPointer = pointer;
+            Log.Add("ContextMenuQuery");
+        }
+
+        public void ContextMenuAction(ContextMenuActionPayload action)
+        {
+            LastContextAction = action;
+            Log.Add("ContextMenuAction");
         }
 
         public void Touch(TouchKind kind, PointerPacket pointer)

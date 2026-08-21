@@ -230,6 +230,16 @@ namespace BrowserServer
                 ClientEnvironmentBridge.Apply(payload);
             }
 
+            public void ContextMenuQuery(PointerPacket pointer)
+            {
+                var ignored = ContextMenuBridge.HandleQueryAsync(pointer);
+            }
+
+            public void ContextMenuAction(ContextMenuActionPayload action)
+            {
+                ContextMenuBridge.HandleAction(action);
+            }
+
             public void Touch(TouchKind kind, PointerPacket pointer)
             {
                 var browser = TabManager.ActiveBrowser;
@@ -280,6 +290,7 @@ namespace BrowserServer
 
             TabManager.Server = server;
             TabManager.CreateRenderHandler = (browser, tabId) => new TestRHI(browser, tabId);
+            TabManager.ActiveTabChanged = ResetCaptureState;
 
             const string testUrl = "https://www.google.com/";
             var cefRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp133");

@@ -454,6 +454,53 @@ namespace BrowserClient
             }
         }
 
+        public async Task SendContextMenuQueryAsync(Point normalized)
+        {
+            try
+            {
+                if (sock == null || sock.State != WebSocketState.Open)
+                    return;
+
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.ContextMenuQuery,
+                    JSONData = JsonConvert.SerializeObject(new PointerPacket
+                    {
+                        px = normalized.X,
+                        py = normalized.Y,
+                        id = 0
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
+            }
+        }
+
+        public async Task SendContextMenuActionAsync(string action, string url)
+        {
+            try
+            {
+                if (sock == null || sock.State != WebSocketState.Open)
+                    return;
+
+                var encoded = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new CommPacket
+                {
+                    PType = PacketType.ContextMenuAction,
+                    JSONData = JsonConvert.SerializeObject(new ContextMenuActionPayload
+                    {
+                        action = action,
+                        url = url
+                    })
+                }));
+                await SendTextAsync(new ArraySegment<byte>(encoded));
+            }
+            catch
+            {
+            }
+        }
+
         public async Task SendPwaInstalledAsync(IEnumerable<string> urls, bool reload)
         {
             try

@@ -133,6 +133,8 @@
     <Compile Include="WebSocketJsonProtocol.cs" />
     <Compile Include="ClientCommandDispatcher.cs" />
     <Compile Include="ClientEnvironmentBridge.cs" />
+    <Compile Include="ContextMenuBridge.cs" />
+    <Compile Include="ContextMenuRules.cs" />
     <Compile Include="RenderFrameSession.cs" />
     <Compile Include="JpegRenderEncoder.cs" />
     <Compile Include="BinaryWebSocketFrame.cs" />
