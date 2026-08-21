@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -39,19 +39,65 @@ namespace BrowserClient
         /// <summary>Builds display/locale environment on the UI thread.</summary>
         public Func<Task<ClientEnvironmentPayload>> ProvideClientEnvironment;
 
+        private CancellationTokenSource receiveCts;
+        private ClientWebSocket activeSocket;
+        private string lastAddr;
+        private bool intentionalStop;
+        private int reconnectAttempt;
+
+        public async Task StopAsync()
+        {
+            intentionalStop = true;
+            var cts = receiveCts;
+            receiveCts = null;
+            if (cts != null)
+            {
+                try { cts.Cancel(); } catch { }
+                try { cts.Dispose(); } catch { }
+            }
+
+            var socket = activeSocket;
+            activeSocket = null;
+            if (socket == null)
+                return;
+
+            try
+            {
+                if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+            }
+            catch
+            {
+            }
+
+            try { socket.Dispose(); } catch { }
+        }
+
         public async void StartRecive(string addr)
         {
+            await StopAsync();
+
+            intentionalStop = false;
+            lastAddr = addr;
+            reconnectAttempt = 0;
+
             var localSettings = Windows.Storage.ApplicationData.Current.LocalSettings;
 
             // Create a simple setting.
             localSettings.Values["LastServerUrl"] = addr ;
 
+            receiveCts = new CancellationTokenSource();
+            var receiveToken = receiveCts.Token;
+
             sock = new ClientWebSocket();
+            activeSocket = sock;
             Downloads.OnChunkWritten = (id, seq) =>
             {
                 var ignored = SendDownloadAckAsync(id, seq);
             };
             MediaCapture.SendBinaryAsync = SendBinaryAsync;
+
+            var reconnectAfterRotate = false;
 
             try
             {
@@ -59,13 +105,14 @@ namespace BrowserClient
                 await Downloads.EnsureLoadedAsync();
                 await SendClientEnvironmentAsync();
                 await SendPwaInstalledAsync(false);
+                reconnectAttempt = 0;
 
                 // Typical messages are << 1MB; grow on demand for rare large frames.
                 var readbuffer = new byte[512 * 1024];
 
-                while (sock.State == WebSocketState.Open)
+                while (sock.State == WebSocketState.Open && !receiveToken.IsCancellationRequested)
                 {
-                    var res = await sock.ReceiveAsync(new ArraySegment<byte>(readbuffer), CancellationToken.None);
+                    var res = await sock.ReceiveAsync(new ArraySegment<byte>(readbuffer), receiveToken);
                     var messageType = res.MessageType;
                     int total = res.Count;
 
@@ -80,7 +127,7 @@ namespace BrowserClient
 
                         res = await sock.ReceiveAsync(
                             new ArraySegment<byte>(readbuffer, total, readbuffer.Length - total),
-                            CancellationToken.None);
+                            receiveToken);
                         total += res.Count;
                     }
 
@@ -140,6 +187,12 @@ namespace BrowserClient
                             {
                                 var json = System.Text.Encoding.UTF8.GetString(readbuffer, 0, total);
                                 var packet = JsonConvert.DeserializeObject<TextPacket>(json);
+                                if (packet.PType == TextPacketType.RotateDeviceId)
+                                {
+                                    DeviceIdentity.RotateDeviceId();
+                                    reconnectAfterRotate = true;
+                                    break;
+                                }
                                 if (packet.PType == TextPacketType.AudioStop)
                                     audioPlayer.Stop();
                                 HandleDownloadTextPacket(packet);
@@ -156,6 +209,9 @@ namespace BrowserClient
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+            }
             catch (WebSocketException)
             {
                 // Common when the peer resets during a heavy transfer; connection will be recreated on next Connect().
@@ -170,6 +226,8 @@ namespace BrowserClient
             {
                 audioPlayer.Stop();
                 try { MediaCapture.Dispose(); } catch { }
+                if (ReferenceEquals(activeSocket, sock))
+                    activeSocket = null;
                 try
                 {
                     if (sock != null &&
@@ -181,7 +239,26 @@ namespace BrowserClient
                 catch
                 {
                 }
+                try { sock?.Dispose(); } catch { }
             }
+
+            if (reconnectAfterRotate)
+            {
+                StartRecive(addr);
+                return;
+            }
+
+            if (intentionalStop || string.IsNullOrEmpty(lastAddr))
+                return;
+
+            reconnectAttempt++;
+            if (reconnectAttempt > 8)
+                return;
+
+            var delayMs = Math.Min(3000, 400 * reconnectAttempt);
+            try { await Task.Delay(delayMs); } catch { }
+            if (!intentionalStop)
+                StartRecive(lastAddr);
         }
 
         private void HandleNotificationTextPacket(TextPacket packet)

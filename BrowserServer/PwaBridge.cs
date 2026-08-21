@@ -15,16 +15,19 @@ namespace BrowserServer
             if (session == null)
                 return;
 
-            lock (session.PwaInstalledOrigins)
+            if (session?.Device == null)
+                return;
+
+            lock (session.Device.PwaInstalledOrigins)
             {
-                session.PwaInstalledOrigins.Clear();
+                session.Device.PwaInstalledOrigins.Clear();
                 if (urls != null)
                 {
                     foreach (var url in urls)
                     {
                         var origin = TryGetOrigin(url);
                         if (!string.IsNullOrEmpty(origin))
-                            session.PwaInstalledOrigins.Add(origin);
+                            session.Device.PwaInstalledOrigins.Add(origin);
                     }
                 }
             }
@@ -46,9 +49,12 @@ namespace BrowserServer
             if (string.IsNullOrEmpty(origin))
                 return false;
 
-            lock (session.PwaInstalledOrigins)
+            if (session?.Device == null)
+                return false;
+
+            lock (session.Device.PwaInstalledOrigins)
             {
-                return session.PwaInstalledOrigins.Contains(origin);
+                return session.Device.PwaInstalledOrigins.Contains(origin);
             }
         }
 
@@ -121,11 +127,14 @@ namespace BrowserServer
 
         private static string GetOriginSummary(ClientSession session)
         {
-            lock (session.PwaInstalledOrigins)
+            if (session?.Device == null)
+                return "(none)";
+
+            lock (session.Device.PwaInstalledOrigins)
             {
-                if (session.PwaInstalledOrigins.Count == 0)
+                if (session.Device.PwaInstalledOrigins.Count == 0)
                     return "(none)";
-                return string.Join(", ", session.PwaInstalledOrigins);
+                return string.Join(", ", session.Device.PwaInstalledOrigins);
             }
         }
 

@@ -26,6 +26,7 @@ namespace BrowserServer.Tests
         [Fact]
         public void Hub_CreateAndRemove_TracksSessions()
         {
+            DeviceContextHub.ResetForTests();
             ClientSessionHub.Create("a").Should().NotBeNull();
             ClientSessionHub.Count.Should().Be(1);
             ClientSessionHub.Get("a").Should().NotBeNull();
@@ -38,6 +39,7 @@ namespace BrowserServer.Tests
         [Fact]
         public void Hub_EnforcesMaxSessions()
         {
+            DeviceContextHub.ResetForTests();
             for (int i = 0; i < ClientSessionHub.MaxSessions; i++)
                 ClientSessionHub.Create("s" + i).Should().NotBeNull();
 
@@ -106,9 +108,10 @@ namespace BrowserServer.Tests
             sessionA.FrameSession.Should().NotBeSameAs(sessionB.FrameSession);
 
             CefPaths.Root = Path.Combine(Path.GetTempPath(), "CloudBrowserTestCef");
-            var pathA = Path.Combine(CefPaths.SessionsRoot, CefPaths.SanitizeSessionFolderName("ws-a"));
-            var pathB = Path.Combine(CefPaths.SessionsRoot, CefPaths.SanitizeSessionFolderName("ws-b"));
+            var pathA = CefPaths.GetDeviceProfilePath(Guid.NewGuid().ToString("N"));
+            var pathB = CefPaths.GetDeviceProfilePath(Guid.NewGuid().ToString("N"));
             pathA.Should().NotBe(pathB);
+            CefPaths.IsDirectChildOfRoot(pathA).Should().BeTrue();
         }
 
         [Fact]

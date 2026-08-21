@@ -56,12 +56,6 @@ namespace BrowserServer
                         Console.WriteLine("cbNotify register error: " + ex.Message);
                     }
                 };
-
-                browser.JavascriptObjectRepository.Register(
-                    "cbNotify",
-                    new NotificationJsBridge(tabId),
-                    isAsync: true,
-                    options: BindingOptions.DefaultBinder);
             }
             catch (Exception ex)
             {
@@ -96,10 +90,13 @@ namespace BrowserServer
             if (session == null)
                 return "default";
 
-            lock (session.NotificationOrigins)
+            if (session?.Device == null)
+                return "default";
+
+            lock (session.Device.NotificationOrigins)
             {
                 bool allowed;
-                if (!session.NotificationOrigins.TryGetValue(origin, out allowed))
+                if (!session.Device.NotificationOrigins.TryGetValue(origin, out allowed))
                     return "default";
                 return allowed ? "granted" : "denied";
             }
@@ -112,12 +109,12 @@ namespace BrowserServer
             lock (Sync)
             {
                 var session = ClientSessionHub.GetByTabId(tabId);
-                if (session != null)
+                if (session != null && session.Device != null)
                 {
-                    lock (session.NotificationOrigins)
+                    lock (session.Device.NotificationOrigins)
                     {
                         bool allowed;
-                        if (session.NotificationOrigins.TryGetValue(origin, out allowed))
+                        if (session.Device.NotificationOrigins.TryGetValue(origin, out allowed))
                         {
                             Console.WriteLine("Notification permission cached origin={0} → {1}", origin, allowed ? "granted" : "denied");
                             return Task.FromResult(allowed ? "granted" : "denied");
@@ -189,11 +186,11 @@ namespace BrowserServer
             string tabId;
             PendingPermissionTabId.TryRemove(payload.requestId, out tabId);
             var session = !string.IsNullOrEmpty(tabId) ? ClientSessionHub.GetByTabId(tabId) : null;
-            if (session != null && !string.IsNullOrEmpty(origin))
+            if (session != null && session.Device != null && !string.IsNullOrEmpty(origin))
             {
-                lock (session.NotificationOrigins)
+                lock (session.Device.NotificationOrigins)
                 {
-                    session.NotificationOrigins[origin] = payload.allowed;
+                    session.Device.NotificationOrigins[origin] = payload.allowed;
                 }
             }
 
@@ -214,12 +211,12 @@ namespace BrowserServer
             if (!string.IsNullOrEmpty(origin))
             {
                 var session = ClientSessionHub.GetByTabId(tabId);
-                if (session != null)
+                if (session != null && session.Device != null)
                 {
-                    lock (session.NotificationOrigins)
+                    lock (session.Device.NotificationOrigins)
                     {
                         bool allowed;
-                        if (session.NotificationOrigins.TryGetValue(origin, out allowed) && !allowed)
+                        if (session.Device.NotificationOrigins.TryGetValue(origin, out allowed) && !allowed)
                         {
                             Console.WriteLine("Notification blocked (denied) origin=" + origin);
                             return;

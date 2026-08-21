@@ -123,7 +123,7 @@ namespace BrowserServer
             var id = Guid.NewGuid().ToString("N");
             var loadUrl = string.IsNullOrWhiteSpace(url) ? DefaultUrl : url.Trim();
             // Create browser manually so JS media bridge can register before CEF spins up.
-            var requestContext = owner.EnsureBrowserContext().Context;
+            var requestContext = owner.Device.EnsureBrowserContext().Context;
             var browser = new ChromiumWebBrowser(
                 address: loadUrl,
                 browserSettings: null,
@@ -164,24 +164,36 @@ namespace BrowserServer
                 if (e.Frame == null || !e.Frame.IsValid)
                     return;
                 if (e.Frame.IsMain)
+                {
                     Console.WriteLine("Loaded: " + e.Url);
-                // Inject into iframes too — many camera testers host getUserMedia off-main-frame.
-                MediaBridge.InjectShim(e.Frame);
-                NotificationBridge.InjectShim(session.Id, e.Frame);
-                PwaBridge.InjectShim(owner, e.Frame, session);
-                ClientEnvironmentBridge.InjectShim(owner, e.Frame);
-                if (e.Frame.IsMain)
+                    MediaBridge.InjectShim(e.Frame);
+                    NotificationBridge.InjectShim(session.Id, e.Frame);
+                    PwaBridge.InjectShim(owner, e.Frame, session);
+                    ClientEnvironmentBridge.InjectShim(owner, e.Frame);
                     VideoPlaybackBridge.Poll(session.Id, browser);
+                }
+                else
+                {
+                    // Camera/mic testers often host getUserMedia in iframes.
+                    MediaBridge.InjectShim(e.Frame);
+                }
             };
 
             browser.FrameLoadStart += (s, e) =>
             {
-                if (e.Frame != null && e.Frame.IsValid)
+                if (e.Frame == null || !e.Frame.IsValid)
+                    return;
+
+                if (e.Frame.IsMain)
                 {
                     MediaBridge.InjectShim(e.Frame);
                     NotificationBridge.InjectShim(session.Id, e.Frame);
                     PwaBridge.InjectShim(owner, e.Frame, session);
                     ClientEnvironmentBridge.InjectShim(owner, e.Frame);
+                }
+                else
+                {
+                    MediaBridge.InjectShim(e.Frame);
                 }
             };
 
@@ -464,6 +476,74 @@ namespace BrowserServer
             }
 
             owner.SendText(TextPacketType.TabList, JsonConvert.SerializeObject(payload));
+            owner.Device?.ScheduleSaveTabSnapshot(this);
+        }
+
+        public DeviceTabSnapshot BuildSnapshot()
+        {
+            lock (sync)
+            {
+                var activeIndex = 0;
+                if (!string.IsNullOrEmpty(ActiveTabId))
+                {
+                    var idx = tabOrder.IndexOf(ActiveTabId);
+                    if (idx >= 0)
+                        activeIndex = idx;
+                }
+
+                return new DeviceTabSnapshot
+                {
+                    activeIndex = activeIndex,
+                    tabs = tabOrder.Select(id =>
+                    {
+                        var t = tabs[id];
+                        return new DeviceTabEntry
+                        {
+                            url = t.Url ?? "",
+                            title = string.IsNullOrWhiteSpace(t.Title) ? "New Tab" : t.Title,
+                            pwaEntryUrl = t.PwaEntryUrl
+                        };
+                    }).ToList()
+                };
+            }
+        }
+
+        public void RestoreFromSnapshot(DeviceTabSnapshot snapshot)
+        {
+            lock (sync)
+            {
+                if (snapshot?.tabs == null || snapshot.tabs.Count == 0)
+                {
+                    EnsureInitialTab();
+                    return;
+                }
+
+                var count = Math.Min(snapshot.tabs.Count, MaxTabs);
+                for (var i = 0; i < count; i++)
+                {
+                    var entry = snapshot.tabs[i];
+                    var tab = CreateTabUnlocked(entry?.url, setActive: false);
+                    if (tab == null)
+                        break;
+                    if (!string.IsNullOrWhiteSpace(entry?.title))
+                        tab.Title = entry.title.Trim();
+                    if (!string.IsNullOrWhiteSpace(entry?.pwaEntryUrl))
+                        tab.PwaEntryUrl = entry.pwaEntryUrl.Trim();
+                }
+
+                if (tabOrder.Count == 0)
+                {
+                    EnsureInitialTab();
+                    return;
+                }
+
+                var activeIndex = snapshot.activeIndex;
+                if (activeIndex < 0 || activeIndex >= tabOrder.Count)
+                    activeIndex = 0;
+                ActiveTabId = tabOrder[activeIndex];
+                NotifyActiveTabChanged();
+                RequestRepaint(Active);
+            }
         }
 
         public void SendNavigatedUrl(string url)

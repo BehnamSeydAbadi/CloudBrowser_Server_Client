@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
@@ -156,7 +156,8 @@ namespace BrowserClient
                 colorScheme = GetColorScheme(),
                 timeZone = tz.Id,
                 utcOffsetMinutes = (int)tz.GetUtcOffset(DateTime.Now).TotalMinutes,
-                orientation = orientationName
+                orientation = orientationName,
+                deviceId = DeviceIdentity.EnsureDeviceId()
             };
         }
 
@@ -847,11 +848,13 @@ namespace BrowserClient
             ConnectPage.Visibility = Visibility.Collapsed;
         }
 
-        public void Connect(string endpoint)
+        public async void Connect(string endpoint)
         {
-            if (ds != null)
+            var previous = ds;
+            if (previous != null)
             {
-                try { ds.Downloads.ListChanged -= Downloads_ListChanged; } catch { }
+                try { previous.Downloads.ListChanged -= Downloads_ListChanged; } catch { }
+                await previous.StopAsync();
             }
 
             ds = new WebBrowserDataSource();

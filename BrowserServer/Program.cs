@@ -37,12 +37,6 @@ namespace BrowserServer
                 }
 
                 session.ResetCaptureState();
-                session.Tabs.EnsureInitialTab();
-                session.Tabs.EnsureActiveBrowserHealthy();
-                session.SendTabList();
-                var active = session.Tabs.Active;
-                if (active != null)
-                    session.SendNavigatedUrl(active.Url);
             }
 
             protected override void OnClose(CloseEventArgs e)

@@ -44,6 +44,21 @@ namespace BrowserServer
 
             return true; // cancel creating a popup browser
         }
+
+        protected override void OnAfterCreated(IWebBrowser chromiumWebBrowser, IBrowser browser)
+        {
+            // Off-screen popups cancelled in OnBeforePopup can still briefly exist in CEF.
+            if (browser != null && browser.IsPopup)
+            {
+                try
+                {
+                    browser.GetHost()?.CloseBrowser(true);
+                }
+                catch
+                {
+                }
+            }
+        }
     }
 
     /// <summary>

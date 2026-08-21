@@ -15,6 +15,22 @@ namespace BrowserServer
             if (session == null || payload == null)
                 return;
 
+            if (!DeviceContextHub.IsValidDeviceId(payload.deviceId))
+            {
+                Console.WriteLine("Client environment rejected: invalid deviceId");
+                return;
+            }
+
+            var attachResult = DeviceContextHub.Attach(payload.deviceId.Trim(), session);
+            if (attachResult == DeviceAttachResult.DeviceIdConflict)
+                return;
+
+            if (attachResult != DeviceAttachResult.Success)
+            {
+                Console.WriteLine("Client environment rejected: device attach failed");
+                return;
+            }
+
             session.Environment = payload;
             if (!string.IsNullOrWhiteSpace(payload.acceptLanguage))
                 session.AcceptLanguage = payload.acceptLanguage.Trim();
@@ -28,7 +44,8 @@ namespace BrowserServer
             }
 
             Console.WriteLine(
-                "Client environment: CSS {0}x{1} @ {2}x, screen {3}x{4}, {5}, lang={6}, tz={7}",
+                "Client environment: device={0} CSS {1}x{2} @ {3}x, screen {4}x{5}, {6}, lang={7}, tz={8}",
+                payload.deviceId,
                 payload.cssWidth,
                 payload.cssHeight,
                 payload.devicePixelRatio,
@@ -37,6 +54,21 @@ namespace BrowserServer
                 payload.orientation,
                 session.AcceptLanguage,
                 payload.timeZone);
+
+            if (CefRuntime.IsReady)
+            {
+                var snapshot = session.Device.LoadTabSnapshot();
+                if (snapshot != null && snapshot.tabs != null && snapshot.tabs.Count > 0)
+                    session.Tabs.RestoreFromSnapshot(snapshot);
+                else
+                    session.Tabs.EnsureInitialTab();
+
+                session.Tabs.EnsureActiveBrowserHealthy();
+                session.SendTabList();
+                var active = session.Tabs.Active;
+                if (active != null)
+                    session.SendNavigatedUrl(active.Url);
+            }
 
             InjectIntoActive(session);
         }

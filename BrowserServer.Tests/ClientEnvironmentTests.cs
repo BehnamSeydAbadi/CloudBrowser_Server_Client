@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Newtonsoft.Json;
+using System;
 using Xunit;
 
 namespace BrowserServer.Tests
@@ -87,6 +88,8 @@ namespace BrowserServer.Tests
         [Fact]
         public void Apply_StoresAcceptLanguageAndViewport()
         {
+            DeviceContextHub.ResetForTests();
+            var deviceId = Guid.NewGuid().ToString("N");
             var session = new ClientSession("test-ws");
             ClientEnvironmentBridge.Apply(session, new ClientEnvironmentPayload
             {
@@ -100,10 +103,13 @@ namespace BrowserServer.Tests
                 colorScheme = "dark",
                 timeZone = "Romance Standard Time",
                 utcOffsetMinutes = 60,
-                orientation = "portrait"
+                orientation = "portrait",
+                deviceId = deviceId
             });
 
             session.AcceptLanguage.Should().Be("fr-FR,en");
+            session.Device.Should().NotBeNull();
+            session.Device.DeviceId.Should().Be(deviceId);
             session.Environment.Should().BeEquivalentTo(new ClientEnvironmentPayload
             {
                 cssWidth = 412,
@@ -116,7 +122,8 @@ namespace BrowserServer.Tests
                 colorScheme = "dark",
                 timeZone = "Romance Standard Time",
                 utcOffsetMinutes = 60,
-                orientation = "portrait"
+                orientation = "portrait",
+                deviceId = deviceId
             });
         }
 

@@ -83,12 +83,6 @@ namespace BrowserServer
                         Console.WriteLine("cbMedia register error: " + ex.Message);
                     }
                 };
-
-                browser.JavascriptObjectRepository.Register(
-                    "cbMedia",
-                    new MediaJsBridge(tabId),
-                    isAsync: true,
-                    options: BindingOptions.DefaultBinder);
             }
             catch (Exception ex)
             {

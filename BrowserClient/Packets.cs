@@ -48,7 +48,9 @@ namespace BrowserClient
         /// <summary>Site wants notification permission — JSON NotificationPermissionPayload.</summary>
         NotificationPermissionRequest,
         /// <summary>Context menu offer after long-press — JSON ContextMenuOfferPayload.</summary>
-        ContextMenu
+        ContextMenu,
+        /// <summary>DeviceId concurrency — client must rotate DeviceId and reconnect.</summary>
+        RotateDeviceId
     }
 
     public enum PacketType
@@ -116,6 +118,7 @@ namespace BrowserClient
         public string timeZone;
         public int utcOffsetMinutes;
         public string orientation;
+        public string deviceId;
     }
 
     public class MediaPermissionPayload

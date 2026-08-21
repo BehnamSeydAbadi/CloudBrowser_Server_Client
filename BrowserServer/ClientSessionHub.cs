@@ -118,6 +118,22 @@ namespace BrowserServer
             get { lock (Sync) return ByWebSocketId.Count; }
         }
 
+        public static void ResetForTests()
+        {
+            List<ClientSession> sessions;
+            lock (Sync)
+            {
+                sessions = ByWebSocketId.Values.ToList();
+                ByWebSocketId.Clear();
+                ByTabId.Clear();
+            }
+
+            foreach (var session in sessions)
+            {
+                try { session.Dispose(); } catch { }
+            }
+        }
+
         public static string FindTabIdForBrowser(IBrowser browser)
         {
             if (browser == null)

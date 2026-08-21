@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Newtonsoft.Json;
 
 namespace BrowserServer
@@ -12,25 +11,13 @@ namespace BrowserServer
         public RenderFrameSession FrameSession { get; private set; }
         public ClientEnvironmentPayload Environment { get; set; }
         public string AcceptLanguage { get; set; } = "en-US,en";
-        public HashSet<string> PwaInstalledOrigins { get; private set; }
-        public Dictionary<string, bool> NotificationOrigins { get; private set; }
-        private SessionRequestContext browserContext;
+        public DeviceContext Device { get; set; }
 
         public ClientSession(string webSocketSessionId)
         {
             WebSocketSessionId = webSocketSessionId;
             FrameSession = new RenderFrameSession();
-            PwaInstalledOrigins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            NotificationOrigins = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             Tabs = new TabManager(this);
-        }
-
-        internal SessionRequestContext EnsureBrowserContext()
-        {
-            if (browserContext == null)
-                browserContext = new SessionRequestContext(WebSocketSessionId);
-            browserContext.EnsureInitialized();
-            return browserContext;
         }
 
         public void SendText(TextPacketType type, string text = null)
@@ -91,11 +78,7 @@ namespace BrowserServer
 
             try
             {
-                if (browserContext != null)
-                {
-                    browserContext.Dispose();
-                    browserContext = null;
-                }
+                DeviceContextHub.Detach(this);
             }
             catch
             {

@@ -4,20 +4,16 @@ using CefSharp;
 
 namespace BrowserServer
 {
-    /// <summary>Per-client CefSharp request context — isolates cookies/storage between WebSocket sessions.</summary>
-    public sealed class SessionRequestContext : IDisposable
+    /// <summary>Per-device CefSharp request context — isolates cookies/storage between devices.</summary>
+    public sealed class DeviceBrowserContext
     {
         private readonly string cachePath;
         private IRequestContext context;
         private bool initialized;
 
-        public SessionRequestContext(string webSocketSessionId)
+        public DeviceBrowserContext(string cachePath)
         {
-            cachePath = Path.Combine(
-                CefPaths.SessionsRoot,
-                CefPaths.SanitizeSessionFolderName(webSocketSessionId));
-
-            Directory.CreateDirectory(cachePath);
+            this.cachePath = cachePath ?? "";
         }
 
         public string CachePath
@@ -40,8 +36,18 @@ namespace BrowserServer
                 return;
 
             initialized = true;
-            if (!CefRuntime.IsReady)
+            if (!CefRuntime.IsReady || string.IsNullOrEmpty(cachePath))
                 return;
+
+            if (!CefPaths.IsDirectChildOfRoot(cachePath))
+            {
+                Console.WriteLine(
+                    "Device profile path must be a direct child of Cef RootCachePath: {0}",
+                    cachePath);
+                return;
+            }
+
+            RemoveEmptyPreCreatedProfileDir(cachePath);
 
             context = new RequestContext(new RequestContextSettings
             {
@@ -50,7 +56,7 @@ namespace BrowserServer
             });
         }
 
-        public void Dispose()
+        public void ReleaseMemory()
         {
             try
             {
@@ -62,17 +68,36 @@ namespace BrowserServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Session request context dispose error: " + ex.Message);
+                Console.WriteLine("Device request context release error: " + ex.Message);
             }
+
+            initialized = false;
+        }
+
+        static void RemoveEmptyPreCreatedProfileDir(string path)
+        {
+            if (!Directory.Exists(path))
+                return;
 
             try
             {
-                if (!string.IsNullOrEmpty(cachePath) && Directory.Exists(cachePath))
-                    Directory.Delete(cachePath, recursive: true);
+                var entries = Directory.GetFileSystemEntries(path);
+                if (entries.Length == 0)
+                {
+                    Directory.Delete(path, recursive: false);
+                    return;
+                }
+
+                if (entries.Length == 1 &&
+                    string.Equals(Path.GetFileName(entries[0]), "tabs.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(entries[0]);
+                    Directory.Delete(path, recursive: false);
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Session cache delete error: " + ex.Message);
+                Console.WriteLine("Device profile cleanup error: " + ex.Message);
             }
         }
     }

@@ -136,7 +136,10 @@
     <Compile Include="ClientSession.cs" />
     <Compile Include="ClientSessionHub.cs" />
     <Compile Include="CefPaths.cs" />
-    <Compile Include="SessionRequestContext.cs" />
+    <Compile Include="DeviceBrowserContext.cs" />
+    <Compile Include="DeviceContext.cs" />
+    <Compile Include="DeviceContextHub.cs" />
+    <Compile Include="DeviceTabSnapshot.cs" />
     <Compile Include="SessionMessaging.cs" />
     <Compile Include="ClientEnvironmentBridge.cs" />
     <Compile Include="ContextMenuBridge.cs" />
