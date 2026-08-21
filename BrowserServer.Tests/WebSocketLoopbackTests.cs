@@ -45,7 +45,7 @@ namespace BrowserServer.Tests
                     activeId = "t1",
                     tabs = new List<TabInfo>
                     {
-                        new TabInfo { id = "t1", title = "New Tab", url = "https://www.google.com/" }
+                        new TabInfo { id = "t1", title = "New Tab", url = "about:blank" }
                     }
                 }));
             }
@@ -96,7 +96,7 @@ namespace BrowserServer.Tests
             var packet = WebSocketJsonProtocol.DecodeTextPacket(received);
 
             packet.PType.Should().Be(TextPacketType.TabList);
-            packet.text.Should().Contain("t1").And.Contain("https://www.google.com/");
+            packet.text.Should().Contain("t1").And.Contain("about:blank");
         }
 
         [Fact]

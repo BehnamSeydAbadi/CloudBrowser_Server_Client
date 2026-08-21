@@ -22,7 +22,7 @@ namespace BrowserServer
     public static class TabManager
     {
         public const int MaxTabs = 8;
-        public const string DefaultUrl = "https://www.google.com/";
+        public const string DefaultUrl = "about:blank";
 
         private static readonly object Sync = new object();
         private static readonly Dictionary<string, TabSession> Tabs = new Dictionary<string, TabSession>();

@@ -292,7 +292,7 @@ namespace BrowserServer
             TabManager.CreateRenderHandler = (browser, tabId) => new TestRHI(browser, tabId);
             TabManager.ActiveTabChanged = ResetCaptureState;
 
-            const string testUrl = "https://www.google.com/";
+            const string testUrl = "about:blank";
             var cefRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CefSharp133");
             var settings = new CefSettings()
             {
