@@ -51,6 +51,9 @@ For now your phone and your server needs to be on the same network
   
 ### What's needed
 - [ ] Privacy security
+- [ ] Text Highlighting
+- [ ] Improve audio playback quality
+- [ ] Improve video playback quality
 - [ ] In Private/Incognito
 - [ ] Microphone
 - [ ] File uploads
