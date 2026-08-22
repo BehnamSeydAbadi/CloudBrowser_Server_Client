@@ -104,6 +104,26 @@ namespace BrowserServer.Tests
             scale.Should().Be(1f);
         }
 
+        [Fact]
+        public void TextInputContent_TextPacket_RoundTrips()
+        {
+            var json = WebSocketJsonProtocol.EncodeTextPacket(TextPacketType.TextInputContent, "field value");
+            var packet = WebSocketJsonProtocol.DecodeTextPacket(json);
+
+            packet.PType.Should().Be(TextPacketType.TextInputContent);
+            packet.text.Should().Be("field value");
+        }
+
+        [Fact]
+        public void TextInputCancel_TextPacket_RoundTrips()
+        {
+            var json = WebSocketJsonProtocol.EncodeTextPacket(TextPacketType.TextInputCancel);
+            var packet = WebSocketJsonProtocol.DecodeTextPacket(json);
+
+            packet.PType.Should().Be(TextPacketType.TextInputCancel);
+            packet.text.Should().Be("");
+        }
+
         [Theory]
         [InlineData("{\"type\":\"insert\",\"text\":\"Hi\"}", SendKeyKind.Insert, "Hi", 0, null)]
         [InlineData("{\"type\":\"backspace\"}", SendKeyKind.Backspace, null, 0, null)]

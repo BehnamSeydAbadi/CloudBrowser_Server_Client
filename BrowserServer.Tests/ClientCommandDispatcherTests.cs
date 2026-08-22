@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using FluentAssertions;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace BrowserServer.Tests
@@ -184,6 +185,87 @@ namespace BrowserServer.Tests
 
             result.Should().Be(DispatchResult.Handled);
             sink.LastBinary.Should().Equal(bytes);
+        }
+
+        [Fact]
+        public void TextInputSend_DispatchesPlainText()
+        {
+            var sink = new RecordingCommands();
+            var json = WebSocketJsonProtocol.EncodeCommPacket(PacketType.TextInputSend, "hello world");
+
+            ClientCommandDispatcher.DispatchText(json, true, 2f, sink);
+
+            sink.LastText.Should().Be("hello world");
+            sink.Log.Should().Contain("TextInputSend");
+        }
+
+        [Fact]
+        public void SendKey_ArrowKeys_DispatchVirtualKeyCodes()
+        {
+            var sink = new RecordingCommands();
+            ClientCommandDispatcher.DispatchText(
+                WebSocketJsonProtocol.EncodeCommPacket(PacketType.SendKey, "{\"type\":\"down\",\"code\":37}"),
+                true,
+                2f,
+                sink);
+
+            sink.LastKey.Kind.Should().Be(SendKeyKind.Coded);
+            sink.LastKey.Code.Should().Be(37);
+            sink.LastKey.EventType.Should().Be("down");
+        }
+
+        [Fact]
+        public void SendKey_Enter_Dispatches()
+        {
+            var sink = new RecordingCommands();
+            ClientCommandDispatcher.DispatchText(
+                WebSocketJsonProtocol.EncodeCommPacket(PacketType.SendKey, "{\"type\":\"enter\"}"),
+                true,
+                2f,
+                sink);
+
+            sink.LastKey.Kind.Should().Be(SendKeyKind.Enter);
+        }
+
+        [Fact]
+        public void TouchDown_DispatchesPressedKind()
+        {
+            var sink = new RecordingCommands();
+            ClientCommandDispatcher.DispatchText(
+                WebSocketJsonProtocol.EncodeCommPacket(PacketType.TouchDown, new PointerPacket { px = 0.1, py = 0.2, id = 1 }),
+                true,
+                2f,
+                sink);
+
+            sink.LastTouchKind.Should().Be(TouchKind.Down);
+            sink.LastPointer.px.Should().BeApproximately(0.1, 0.0001);
+        }
+
+        [Fact]
+        public void TouchUp_DispatchesReleasedKind()
+        {
+            var sink = new RecordingCommands();
+            ClientCommandDispatcher.DispatchText(
+                WebSocketJsonProtocol.EncodeCommPacket(PacketType.TouchUp, new PointerPacket { px = 0.3, py = 0.4, id = 2 }),
+                true,
+                2f,
+                sink);
+
+            sink.LastTouchKind.Should().Be(TouchKind.Up);
+            sink.LastPointer.id.Should().Be(2u);
+        }
+
+        [Fact]
+        public void PointerPacket_NormalizedCoordinates_RoundTrip()
+        {
+            var pointer = new PointerPacket { px = 0.42, py = 0.77, id = 5 };
+            var json = WebSocketJsonProtocol.EncodeCommPacket(PacketType.TouchMoved, pointer);
+            var packet = WebSocketJsonProtocol.DecodeCommPacket(json);
+            var restored = JsonConvert.DeserializeObject<PointerPacket>(packet.JSONData);
+
+            restored.px.Should().BeApproximately(0.42, 0.0001);
+            restored.py.Should().BeApproximately(0.77, 0.0001);
+            restored.id.Should().Be(5u);
         }
 
         [Fact]
